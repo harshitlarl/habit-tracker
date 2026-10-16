@@ -1,0 +1,28 @@
+rules_version = '2';
+
+// Momentum — Firestore security rules (SPEC §13.3).
+//
+// One person, one tree: a signed-in user may read and write only the documents under their own
+// users/{uid}. Everything else is denied. Firestore denies by default, so the final match below
+// documents that intent rather than adding a gate.
+//
+// Field validation is deliberately minimal. The data is owner-only: nobody else can ever read or
+// write it, so a malformed field can only affect its author, and the client already validates on
+// both sides (parseRemoteDoc() on read, the store on write). The sync engine commits its changes in
+// write batches, which Firestore applies all-or-nothing: a rule rejecting a single op the client did
+// not anticipate (a new optional field, a tombstone written with { merge: true }) would fail the
+// whole batch and stall sync for the owner's own data. Access control lives here; shape checks
+// live in the app.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // users/{uid}/habits/{habitId} today, and anything else the owner's tree may grow.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // Everything outside a user's own tree.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -9,6 +9,9 @@ export interface InlineConfirmProps {
   confirmLabel: string;
   /** 'danger' for destructive actions, 'primary' for replace-style confirmations. */
   tone?: 'danger' | 'primary';
+  /** True while the confirmed action runs: both buttons disable and the confirm one shows `busyLabel`. */
+  busy?: boolean;
+  busyLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -17,7 +20,16 @@ export interface InlineConfirmProps {
  * Two-step confirmation rendered in place (never window.confirm). Takes focus when it appears
  * so assistive tech reads the question; the caller returns focus to its trigger on cancel.
  */
-export function InlineConfirm({ title, body, confirmLabel, tone = 'danger', onConfirm, onCancel }: InlineConfirmProps) {
+export function InlineConfirm({
+  title,
+  body,
+  confirmLabel,
+  tone = 'danger',
+  busy = false,
+  busyLabel,
+  onConfirm,
+  onCancel,
+}: InlineConfirmProps) {
   const id = useId();
   const ref = useRef<HTMLDivElement>(null);
 
@@ -26,17 +38,17 @@ export function InlineConfirm({ title, body, confirmLabel, tone = 'danger', onCo
   }, []);
 
   return (
-    <div ref={ref} className="confirm" role="group" aria-labelledby={id} tabIndex={-1}>
+    <div ref={ref} className="confirm" role="group" aria-labelledby={id} aria-busy={busy || undefined} tabIndex={-1}>
       <p id={id} className="confirm__title display display--md">
         {title}
       </p>
       {body ? <p className="confirm__body">{body}</p> : null}
       <div className="confirm__actions">
-        <Button variant="ghost" onClick={onCancel}>
+        <Button variant="ghost" onClick={onCancel} disabled={busy}>
           Cancel
         </Button>
-        <Button variant={tone} onClick={onConfirm}>
-          {confirmLabel}
+        <Button variant={tone} onClick={onConfirm} disabled={busy}>
+          {busy ? (busyLabel ?? confirmLabel) : confirmLabel}
         </Button>
       </div>
     </div>

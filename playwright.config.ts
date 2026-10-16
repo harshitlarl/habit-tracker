@@ -17,6 +17,8 @@ const useChromium = process.env.PW_FALLBACK_CHROMIUM === '1';
 
 export default defineConfig({
   testDir: './e2e',
+  // Only *.spec.ts files are Playwright tests; e2e/helpers/*.test.ts are vitest unit tests of the helpers.
+  testMatch: '**/*.spec.ts',
   timeout: 60_000,
   retries: 0,
   fullyParallel: false,

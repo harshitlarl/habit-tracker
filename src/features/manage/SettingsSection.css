@@ -61,6 +61,14 @@
   margin-top: 0;
 }
 
+/* Under a disabled Reset while Firebase is still restoring a saved session. */
+.settings__hint {
+  margin-top: var(--s-2);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
 .settings__install {
   display: flex;
   align-items: flex-start;

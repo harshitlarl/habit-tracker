@@ -1,0 +1,195 @@
+/* SyncSection — Settings → "Sync across devices" (SPEC §13.6). Field styles come from fields.css. */
+
+.sync__title {
+  text-wrap: balance;
+}
+
+.sync__lead {
+  margin-top: var(--s-1);
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+/* ---------- Signed out: the sign-in form ---------- */
+.sync__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+}
+
+.sync__password {
+  position: relative;
+}
+
+.sync__password > .field__input {
+  padding-right: 76px;
+}
+
+/* "Show" / "Hide" sits inside the field with a 44px hit area (the field itself is 50px tall). */
+.sync__reveal {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border-radius: calc(var(--r-sm) - 2px);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.sync__reveal:active:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.sync__reveal:disabled {
+  opacity: 0.5;
+}
+
+.sync__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
+}
+
+.sync__actions > .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A text link with button semantics and a 44px row. */
+.sync__link {
+  align-self: center;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border-radius: var(--r-sm);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.sync__link:disabled {
+  opacity: 0.5;
+}
+
+/* ---------- Messages: confirmations in --ink-2, errors in ember ink ---------- */
+.sync__message {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.sync__message:empty {
+  display: none;
+}
+
+.sync__message.is-error {
+  color: var(--ember-ink);
+}
+
+/* ---------- Signed in ---------- */
+.sync__account {
+  margin-top: var(--s-3);
+}
+
+.sync__email {
+  margin-top: 2px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.sync__status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.sync__status.is-error {
+  color: var(--ember-ink);
+}
+
+/* The dot is a non-text mark, so --ink-3 is fine for its resting (offline) state. */
+.sync__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.sync__dot[data-state='synced'] {
+  background: var(--c-moss);
+}
+
+.sync__dot[data-state='pending'],
+.sync__dot[data-state='connecting'] {
+  background: var(--c-ochre);
+  animation: sync-pulse 1.4s ease-in-out infinite;
+}
+
+.sync__dot[data-state='error'] {
+  background: var(--danger);
+}
+
+.sync__account > .sync__message {
+  margin-top: var(--s-3);
+}
+
+.sync__manage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+
+.sync__manage > .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sync__manage > .confirm {
+  flex: 1 1 100%;
+  margin-top: 0;
+}
+
+.sync__hint {
+  flex: 1 1 100%;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+@keyframes sync-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

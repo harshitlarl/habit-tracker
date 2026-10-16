@@ -8,7 +8,8 @@ process.env.TZ = 'America/New_York';
 export default defineConfig({
   test: {
     environment: 'node',
-    // Pure helpers only: src/lib and the feature folders' model files (no component tests here).
-    include: ['src/lib/**/*.test.ts', 'src/features/**/*.test.ts'],
+    // Pure helpers only: src/lib, the feature folders' model files and the e2e suite's own helpers
+    // (no component tests here, nothing on the network). Playwright runs *.spec.ts, vitest *.test.ts.
+    include: ['src/lib/**/*.test.ts', 'src/features/**/*.test.ts', 'e2e/helpers/**/*.test.ts'],
   },
 });

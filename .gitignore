@@ -1,11 +1,28 @@
+# Dependencies and build output
 node_modules
 dist
 dev-dist
-.DS_Store
-test-results
-playwright-report
-e2e/screenshots
-*.local
 *.tsbuildinfo
 .vite
 coverage
+
+# Test output
+test-results
+playwright-report
+e2e/screenshots
+
+# Local-only env overrides. The committed .env holds only the PUBLIC Firebase web config
+# (SPEC §13.2) and must stay tracked; private values belong in .env.local / .env.*.local,
+# which this rule ignores.
+*.local
+
+# Hosting CLIs: deploy caches, debug logs and local project links
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.vercel
+.netlify
+
+# OS
+.DS_Store

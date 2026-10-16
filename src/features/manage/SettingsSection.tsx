@@ -1,15 +1,20 @@
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useId, useRef, useState, type ChangeEvent } from 'react';
 import { format } from 'date-fns';
 import useStore, { validateAppData } from '../../lib/store';
 import type { AppData, Theme } from '../../lib/types';
 import { todayKey } from '../../lib/dates';
 import { totalCompletions } from '../../lib/streaks';
 import { isIOS, isStandalone } from '../../lib/platform';
+import { useSyncStore } from '../../lib/sync/syncStore';
+import { signOutUser } from '../../lib/sync/auth';
+import { stopSync } from '../../lib/sync/engine';
 import { Button } from '../../components/Button';
 import { Icon } from '../../components/Icon';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { cx } from '../../components/cx';
 import { InlineConfirm } from './InlineConfirm';
+import { SyncSection } from './SyncSection';
+import { errorMessage } from './syncText';
 import './SettingsSection.css';
 
 const THEME_OPTIONS: ReadonlyArray<{ value: Theme; label: string }> = [
@@ -31,6 +36,39 @@ interface PendingImport {
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+interface ResetCopy {
+  title: string;
+  body: string;
+  confirmLabel: string;
+}
+
+/**
+ * The reset confirmation. Signed in, it promises the account holds everything only when that is
+ * known (`accountCurrent`); offline, still connecting or in error, unsynced check-ins would die
+ * with the device copy, so the copy warns instead.
+ */
+function describeReset(signedIn: boolean, accountCurrent: boolean): ResetCopy {
+  if (!signedIn) {
+    return {
+      title: 'Delete everything?',
+      body: 'Every tracker and check-in on this device will be removed and the theme goes back to System. Export a backup first if you might want it back.',
+      confirmLabel: 'Delete everything',
+    };
+  }
+  if (accountCurrent) {
+    return {
+      title: 'Reset this device?',
+      body: "You'll be signed out first, so your trackers stay safe in your account. Then every tracker and check-in on this device will be removed and the theme goes back to System. Sign in again any time to bring it all back.",
+      confirmLabel: 'Sign out and reset',
+    };
+  }
+  return {
+    title: 'Reset this device?',
+    body: "Some changes here may not have reached your account yet — check the status above, or reset anyway and lose them. You'll be signed out first, then every tracker and check-in on this device is removed and the theme goes back to System.",
+    confirmLabel: 'Reset anyway',
+  };
+}
 
 function describeBackup(data: AppData): string {
   const parts = [plural(data.habits.length, 'tracker'), plural(totalCompletions(data.completions), 'check-in')];
@@ -54,7 +92,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-/** Theme, backup export/import, reset, install hint and the about line. */
+/** Sync, theme, backup export/import, reset, install hint and the about line. */
 export function SettingsSection() {
   const theme = useStore((s) => s.settings.theme);
   const setTheme = useStore((s) => s.setTheme);
@@ -63,13 +101,19 @@ export function SettingsSection() {
   const resetAll = useStore((s) => s.resetAll);
   const habitCount = useStore((s) => s.habits.length);
   const completionCount = useStore((s) => totalCompletions(s.completions));
+  const signedIn = useSyncStore((s) => s.user !== null);
+  const booting = useSyncStore((s) => s.booting);
+  const syncStatus = useSyncStore((s) => s.status);
+  const syncPending = useSyncStore((s) => s.pending);
 
   const [status, setStatus] = useState<Status | null>(null);
   const [pending, setPending] = useState<PendingImport | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [standalone] = useState(isStandalone);
   const fileRef = useRef<HTMLInputElement>(null);
   const resetRef = useRef<HTMLButtonElement>(null);
+  const resetHintId = useId();
 
   function onExport(): void {
     const fileName = `momentum-backup-${todayKey()}.json`;
@@ -136,26 +180,59 @@ export function SettingsSection() {
     setStatus(null);
   }
 
-  function doReset(): void {
-    resetAll();
-    setConfirmReset(false);
-    setPending(null);
-    setStatus({ tone: 'ok', text: 'Everything has been cleared.' });
-  }
-
   function cancelReset(): void {
     setConfirmReset(false);
     // The Reset button mounts again on this render; focus it once it exists.
     requestAnimationFrame(() => resetRef.current?.focus());
   }
 
+  /**
+   * "Reset this device" is local only. Signed in, it signs out first so the wipe never reaches
+   * the account (SPEC §13.4); if that fails nothing is touched. The engine is detached explicitly
+   * before the wipe rather than trusting the auth callback to have run first. The button stays
+   * disabled while Firebase is still restoring a saved session: a wipe then would run as signed
+   * out, and the restored session's first-contact merge would pull the whole cloud copy back.
+   */
+  async function doReset(): Promise<void> {
+    const wasSignedIn = useSyncStore.getState().user !== null;
+    if (wasSignedIn) {
+      setResetting(true);
+      try {
+        await signOutUser();
+        stopSync();
+      } catch (error) {
+        setResetting(false);
+        cancelReset();
+        setStatus({
+          tone: 'error',
+          text: `Could not sign out, so nothing was reset. ${errorMessage(error, 'Try again in a moment.')}`,
+        });
+        return;
+      }
+      setResetting(false);
+    }
+    resetAll();
+    setConfirmReset(false);
+    setPending(null);
+    setStatus({
+      tone: 'ok',
+      text: wasSignedIn ? 'Signed out. Everything on this device has been cleared.' : 'Everything has been cleared.',
+    });
+  }
+
   const hasData = habitCount > 0 || completionCount > 0;
+  const syncNote = signedIn ? ', and the backup syncs to your account' : '';
+  // The account is known to hold everything only once the last snapshot came from the server with
+  // no write still waiting. Offline, connecting or in error, a reset could lose unsynced check-ins.
+  const resetCopy = describeReset(signedIn, syncStatus === 'synced' && !syncPending);
 
   return (
     <section className="settings" aria-labelledby="settings-title">
       <h2 id="settings-title" className="display display--lg settings__title">
         Settings
       </h2>
+
+      <SyncSection />
 
       <div className="card settings__group">
         <p className="small-caps settings__label">Appearance</p>
@@ -172,8 +249,9 @@ export function SettingsSection() {
       <div className="card settings__group">
         <p className="small-caps settings__label">Your data</p>
         <p className="settings__body">
-          Everything is stored on this device only. Export a backup now and then, and import it to pick up on a new
-          phone.
+          {signedIn
+            ? 'Your trackers live on this device and sync to your account. A backup file is still worth keeping now and then.'
+            : 'Everything is stored on this device only. Export a backup now and then, and import it to pick up on a new phone.'}
         </p>
         <div className="settings__buttons">
           <Button variant="subtle" icon={<Icon name="download" size={20} />} onClick={onExport}>
@@ -200,8 +278,8 @@ export function SettingsSection() {
               <>
                 {pending.fileName} holds {describeBackup(pending.data)}.{' '}
                 {hasData
-                  ? `The ${plural(habitCount, 'tracker')} and ${plural(completionCount, 'check-in')} on this device will be replaced.`
-                  : 'Nothing on this device will be lost.'}
+                  ? `The ${plural(habitCount, 'tracker')} and ${plural(completionCount, 'check-in')} on this device will be replaced${syncNote}.`
+                  : `Nothing on this device will be lost${syncNote}.`}
               </>
             }
             confirmLabel="Replace"
@@ -218,21 +296,32 @@ export function SettingsSection() {
         <div className="settings__danger">
           {confirmReset ? (
             <InlineConfirm
-              title="Delete everything?"
-              body="Every tracker and check-in on this device will be removed and the theme goes back to System. Export a backup first if you might want it back."
-              confirmLabel="Delete everything"
-              onConfirm={doReset}
+              title={resetCopy.title}
+              body={resetCopy.body}
+              confirmLabel={resetCopy.confirmLabel}
+              busy={resetting}
+              busyLabel="Signing out…"
+              onConfirm={() => void doReset()}
               onCancel={cancelReset}
             />
           ) : (
-            <Button
-              ref={resetRef}
-              variant="danger"
-              icon={<Icon name="trash" size={20} />}
-              onClick={() => setConfirmReset(true)}
-            >
-              Reset all data
-            </Button>
+            <>
+              <Button
+                ref={resetRef}
+                variant="danger"
+                icon={<Icon name="trash" size={20} />}
+                onClick={() => setConfirmReset(true)}
+                disabled={booting}
+                aria-describedby={booting ? resetHintId : undefined}
+              >
+                Reset this device
+              </Button>
+              {booting ? (
+                <p id={resetHintId} className="settings__hint">
+                  Checking your account…
+                </p>
+              ) : null}
+            </>
           )}
         </div>
       </div>
@@ -252,7 +341,9 @@ export function SettingsSection() {
         </div>
       )}
 
-      <p className="settings__about small-caps">Momentum · v1 · data stays on this device</p>
+      <p className="settings__about small-caps">
+        Momentum · v1 · {signedIn ? 'synced to your account' : 'data stays on this device'}
+      </p>
     </section>
   );
 }

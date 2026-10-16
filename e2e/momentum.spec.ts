@@ -69,6 +69,8 @@ interface StoredState {
   habits: Array<{ id: string; name: string; createdAt: string; days: number[]; archivedAt?: string }>;
   completions: Record<string, Record<string, true>>;
   settings: { theme: string; installHintDismissed: boolean };
+  /** Tombstones (persist version 2); absent in the version-1 records the suite seeds. */
+  deletedIds?: string[];
 }
 interface Stored {
   version: number;
@@ -865,7 +867,7 @@ test.describe('Momentum on an iPhone', () => {
 
       const stored = await readStore(page);
       expect(stored, `localStorage["${STORAGE_KEY}"] is present`).not.toBeNull();
-      expect(stored?.version).toBe(1);
+      expect(stored?.version).toBe(2); // persist version 2 since cloud sync (tombstones); backups stay at version 1
       expect(stored?.state.habits.map((h) => h.name)).toEqual(['Gym session']);
       expect(stored?.state.settings).toEqual({ theme: 'dark', installHintDismissed: true });
 
@@ -895,14 +897,14 @@ test.describe('Momentum on an iPhone', () => {
 
     await test.step('Reset clears everything after the inline confirmation', async () => {
       await openTab(page, 'Trackers');
-      await page.getByRole('button', { name: 'Reset all data' }).click();
+      await page.getByRole('button', { name: 'Reset this device' }).click();
       const confirm = page.locator('.settings__danger .confirm');
       await expect(confirm).toContainText('Delete everything?');
       await confirm.getByRole('button', { name: 'Cancel' }).click();
       await expect(confirm).toHaveCount(0);
-      await expect(page.getByRole('button', { name: 'Reset all data' })).toBeFocused();
+      await expect(page.getByRole('button', { name: 'Reset this device' })).toBeFocused();
 
-      await page.getByRole('button', { name: 'Reset all data' }).click();
+      await page.getByRole('button', { name: 'Reset this device' }).click();
       await page.locator('.settings__danger .confirm').getByRole('button', { name: 'Delete everything' }).click();
       await expect(status).toHaveText('Everything has been cleared.');
       await expect(page.locator('.manage-row')).toHaveCount(0);
@@ -914,6 +916,7 @@ test.describe('Momentum on an iPhone', () => {
         habits: [],
         completions: {},
         settings: { theme: 'system', installHintDismissed: false },
+        deletedIds: [],
       });
 
       await openTab(page, 'Today');

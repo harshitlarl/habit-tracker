@@ -4,6 +4,12 @@ import type { SyncState, SyncStatus, SyncUser } from './types';
 
 /** UI-facing sync state (SPEC §13.5). NOT persisted — it is rebuilt on every launch by bootstrap.ts. */
 export interface SyncStore extends SyncState {
+  /**
+   * True from launch until Firebase has restored, or ruled out, a saved session (bootstrap.ts). The
+   * sign-in form waits for it, so a signed-in owner never sees the form flash at launch. False when
+   * sync is not configured.
+   */
+  booting: boolean;
   /** Set the status; clears the error unless one is given. */
   setStatus: (status: SyncStatus, error?: string | null) => void;
   setUser: (user: SyncUser | null) => void;
@@ -12,6 +18,7 @@ export interface SyncStore extends SyncState {
   markSynced: (at: number) => void;
   /** Status 'error' with a friendly, user-facing sentence. */
   setError: (error: string) => void;
+  setBooting: (booting: boolean) => void;
 }
 
 export function initialSyncState(): SyncState {
@@ -26,11 +33,13 @@ export function initialSyncState(): SyncState {
 
 export const useSyncStore = create<SyncStore>()((set) => ({
   ...initialSyncState(),
+  booting: isSyncConfigured(),
   setStatus: (status, error = null) => set({ status, error }),
   setUser: (user) => set({ user }),
   setPending: (pending) => set({ pending }),
   markSynced: (at) => set({ status: 'synced', lastSyncedAt: at, error: null }),
   setError: (error) => set({ status: 'error', error }),
+  setBooting: (booting) => set({ booting }),
 }));
 
 export default useSyncStore;

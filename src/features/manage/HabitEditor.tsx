@@ -11,6 +11,7 @@ import { cx } from '../../components/cx';
 import { InlineConfirm } from './InlineConfirm';
 import { ALL_DAYS, WEEKDAYS, WEEKENDS } from './daysSummary';
 import { DEFAULT_EMOJI, EMOJI_OPTIONS, firstGrapheme, isCuratedEmoji } from './emojis';
+import './fields.css';
 import './HabitEditor.css';
 
 export interface HabitEditorProps {

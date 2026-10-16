@@ -23,10 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Node 22.12+ is required (vitest 5 supports ^22.12 || ^24 || >=26); see "engines" in package.json.
+      # Node 24 (current LTS) satisfies "engines" in package.json and the Firebase SDK's own >=24.12,
+      # so npm ci installs without EBADENGINE warnings.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - run: npm ci

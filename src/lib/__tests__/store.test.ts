@@ -15,12 +15,14 @@ import useStore, {
 import { addDays, isScheduled, todayKey, weekdayOf } from '../dates';
 import { activeHabits, archivedHabits, dueHabits, isDone } from '../selectors';
 import { bestStreak, completionStats, currentStreak } from '../streaks';
-import type { AppData, Habit, Weekday } from '../types';
+import { readBaseline, writeBaseline } from '../sync/baseline';
+import type { LocalData } from '../sync/types';
+import { isValidId, type AppData, type Habit, type Weekday } from '../types';
 
 const store = () => useStore.getState();
 const TODAY = todayKey();
 
-type Persisted = Pick<StoreState, 'habits' | 'completions' | 'settings'>;
+type Persisted = Pick<StoreState, 'habits' | 'completions' | 'settings' | 'deletedIds'>;
 
 const add = (name: string, over: Partial<HabitInput> = {}): Habit =>
   store().addHabit({ name, emoji: name.slice(0, 1).toLowerCase(), color: 'sage', days: [0], ...over });
@@ -877,5 +879,595 @@ describe('resetAll', () => {
     store().resetAll();
     expect(store().settings).toEqual(first);
     expect(store().settings).not.toBe(DEFAULT_SETTINGS);
+  });
+
+  it('clears tombstones too (SPEC §13.4: "reset this device")', () => {
+    const a = add('A');
+    store().deleteHabit(a.id);
+    expect(store().deletedIds).toEqual([a.id]);
+    store().resetAll();
+    expect(store().deletedIds).toEqual([]);
+  });
+});
+
+/* ---------- Phase 2: tombstones, migration, applyRemote (SPEC §13.4) ---------- */
+
+/** Runs `fn` with persist writing to `mem`, restoring the real storage afterwards. */
+async function withStorage(mem: Map<string, string>, fn: () => Promise<unknown> | void): Promise<void> {
+  const original = useStore.persist.getOptions().storage;
+  expect(original).toBeDefined();
+  if (!original) return;
+  try {
+    useStore.persist.setOptions({ storage: memoryStorage(mem) });
+    await fn();
+  } finally {
+    useStore.persist.setOptions({ storage: original });
+  }
+}
+
+/** Rehydrates the store from a stored record, as a reload would, and returns what persist wrote back. */
+async function rehydrateFrom(record: unknown): Promise<StorageValue<Persisted> | null> {
+  const mem = new Map<string, string>([[STORAGE_KEY, JSON.stringify(record)]]);
+  await withStorage(mem, () => useStore.persist.rehydrate());
+  const raw = mem.get(STORAGE_KEY);
+  return raw === undefined ? null : (JSON.parse(raw) as StorageValue<Persisted>);
+}
+
+const storedHabit = (over: Partial<Habit> = {}): Habit => ({
+  id: 'a',
+  name: 'Gym',
+  emoji: 'g',
+  color: 'plum',
+  days: [1, 3],
+  createdAt: '2026-10-01',
+  order: 0,
+  ...over,
+});
+
+describe('persist version 2: migration and repair', () => {
+  it('migrates a v1 record: deletedIds starts empty and the record is rewritten at version 2', async () => {
+    const written = await rehydrateFrom({
+      state: {
+        habits: [storedHabit()],
+        completions: { a: { '2026-10-06': true } },
+        settings: { theme: 'dark', installHintDismissed: true },
+      },
+      version: 1,
+    });
+    expect(store().habits).toEqual([storedHabit()]);
+    expect(store().completions).toEqual({ a: { '2026-10-06': true } });
+    expect(store().settings).toEqual({ theme: 'dark', installHintDismissed: true });
+    expect(store().deletedIds).toEqual([]);
+    expect(written?.version).toBe(2);
+    expect(written?.state.deletedIds).toEqual([]);
+    expect(written?.state.habits).toEqual([storedHabit()]);
+  });
+
+  it('migrates a partial v1 record, filling the rest with defaults', async () => {
+    await rehydrateFrom({ state: { habits: [storedHabit()] }, version: 1 });
+    expect(store().habits).toEqual([storedHabit()]);
+    expect(store().completions).toEqual({});
+    expect(store().settings).toEqual(DEFAULT_SETTINGS);
+    expect(store().deletedIds).toEqual([]);
+  });
+
+  it('keeps tombstones from a v2 record: strings only, deduplicated, never naming a present tracker', async () => {
+    await rehydrateFrom({
+      state: {
+        habits: [storedHabit()],
+        completions: {},
+        settings: DEFAULT_SETTINGS,
+        deletedIds: ['x', 'y', 'x', 5, null, '', '   ', '__proto__', 'a'],
+      },
+      version: 2,
+    });
+    expect(store().deletedIds).toEqual(['x', 'y']);
+    expect(store().habits).toEqual([storedHabit()]);
+  });
+
+  it.each<unknown>([null, 'garbage', 5, [], { habits: 'nope', completions: [], settings: null, deletedIds: 'x' }])(
+    'survives a damaged v2 record (%j) with the defaults',
+    async (state) => {
+      await rehydrateFrom({ state, version: 2 });
+      expect(store().habits).toEqual([]);
+      expect(store().completions).toEqual({});
+      expect(store().settings).toEqual(DEFAULT_SETTINGS);
+      expect(store().deletedIds).toEqual([]);
+      expect(typeof store().addHabit).toBe('function');
+    },
+  );
+
+  it.each<unknown>([null, 'garbage', { habits: [null], deletedIds: 'x' }])(
+    'survives a damaged v1 record (%j) through migrate and merge',
+    async (state) => {
+      const written = await rehydrateFrom({ state, version: 1 });
+      expect(store().habits).toEqual([]);
+      expect(store().deletedIds).toEqual([]);
+      expect(written?.version).toBe(2);
+    },
+  );
+
+  it('repairs damaged trackers field by field and drops only what cannot be addressed', async () => {
+    const valid = storedHabit();
+    await rehydrateFrom({
+      state: {
+        habits: [
+          null,
+          5,
+          'x',
+          { id: '' },
+          { id: '__proto__', name: 'x' },
+          { name: 'No id' },
+          valid,
+          { ...valid, name: 'Duplicate id' },
+          {
+            id: 'b',
+            name: `  ${'n'.repeat(45)}`,
+            emoji: 7,
+            color: 'purple',
+            days: [9, 'x', 3, 3, 1],
+            createdAt: 'yesterday',
+            order: 'first',
+            note: 42,
+            archivedAt: '2026-13-01',
+          },
+          { id: 'c', name: 'Minimal' },
+          { id: 'd', name: 'Note', note: 'm'.repeat(50), archivedAt: '2026-10-10', order: 2.5, days: [] },
+        ],
+        completions: {
+          a: { '2026-10-06': true, '2026-10-07': false, bad: true, '2026-02-30': true },
+          b: 'nope',
+          c: { '2026-10-01': 1 },
+          zzz: { '2026-10-01': true },
+          d: { '2026-10-02': true },
+        },
+        settings: { theme: 'blue', installHintDismissed: 'yes' },
+        deletedIds: ['gone', 'a', 'gone', 7],
+      },
+      version: 2,
+    });
+    expect(store().habits).toEqual([
+      valid,
+      { id: 'b', name: 'n'.repeat(40), emoji: '', color: 'terracotta', days: [1, 3], createdAt: TODAY, order: 0 },
+      { id: 'c', name: 'Minimal', emoji: '', color: 'terracotta', days: EVERY_DAY, createdAt: TODAY, order: 0 },
+      {
+        id: 'd',
+        name: 'Note',
+        emoji: '',
+        color: 'terracotta',
+        days: EVERY_DAY,
+        createdAt: TODAY,
+        order: 2.5,
+        note: 'm'.repeat(40),
+        archivedAt: '2026-10-10',
+      },
+    ]);
+    expect(store().habits[1]).not.toHaveProperty('note');
+    expect(store().habits[1]).not.toHaveProperty('archivedAt');
+    expect(store().completions).toEqual({ a: { '2026-10-06': true }, d: { '2026-10-02': true } });
+    expect(store().settings).toEqual(DEFAULT_SETTINGS);
+    expect(store().deletedIds).toEqual(['gone']);
+    // Whatever hydration repairs, the device can still back itself up.
+    expect(validateAppData(JSON.parse(JSON.stringify(store().exportData()))).ok).toBe(true);
+  });
+
+  it('keeps a tracker without a usable name under a placeholder, so it can be renamed instead of lost', async () => {
+    await rehydrateFrom({
+      state: {
+        habits: [storedHabit({ name: '   ' }), storedHabit({ id: 'b', name: 3 as unknown as string })],
+        completions: { b: { '2026-10-01': true } },
+        settings: DEFAULT_SETTINGS,
+        deletedIds: [],
+      },
+      version: 2,
+    });
+    expect(store().habits.map((h) => h.name)).toEqual(['Untitled', 'Untitled']);
+    expect(store().completions).toEqual({ b: { '2026-10-01': true } });
+    expect(validateAppData(store().exportData()).ok).toBe(true);
+  });
+
+  it('valid records pass through hydration unchanged', async () => {
+    const habits = [
+      storedHabit({ note: '2 hours', archivedAt: '2026-10-10', order: 3 }),
+      storedHabit({ id: 'b', name: 'n'.repeat(HABIT_NAME_MAX), emoji: '👨‍👩‍👧‍👦', days: EVERY_DAY, order: -2 }),
+    ];
+    const completions = { a: { '2026-10-05': true }, b: { '2026-10-01': true, '2026-10-02': true } };
+    await rehydrateFrom({
+      state: { habits, completions, settings: { theme: 'light', installHintDismissed: true }, deletedIds: ['old'] },
+      version: 2,
+    });
+    expect(store().habits).toEqual(habits);
+    expect(store().completions).toEqual(completions);
+    expect(store().settings).toEqual({ theme: 'light', installHintDismissed: true });
+    expect(store().deletedIds).toEqual(['old']);
+  });
+});
+
+describe('deleteHabit tombstones', () => {
+  it('records each deleted id once, in deletion order, and still removes the tracker and its completions', () => {
+    const a = add('A');
+    const b = add('B');
+    store().setCompletion(a.id, '2026-10-05', true);
+    store().deleteHabit(a.id);
+    expect(store().deletedIds).toEqual([a.id]);
+    expect(store().habits).toEqual([b]);
+    expect(store().completions).toEqual({});
+    store().deleteHabit(b.id);
+    expect(store().deletedIds).toEqual([a.id, b.id]);
+    expect(store().habits).toEqual([]);
+  });
+
+  it('ignores unknown ids: no tombstone, no state change', () => {
+    const a = add('A');
+    const before = store();
+    store().deleteHabit('missing');
+    store().deleteHabit(a.id.toUpperCase());
+    expect(store()).toBe(before);
+    expect(store().deletedIds).toEqual([]);
+    expect(store().habits).toEqual([a]);
+  });
+
+  it('does not duplicate a tombstone that already exists', () => {
+    const a = add('A');
+    useStore.setState({ deletedIds: ['x', a.id] }); // a contradictory state only a damaged record could produce
+    store().deleteHabit(a.id);
+    expect(store().deletedIds).toEqual(['x', a.id]);
+    expect(store().habits).toEqual([]);
+  });
+
+  it('tombstones survive a reload', async () => {
+    const a = add('A');
+    const mem = new Map<string, string>();
+    await withStorage(mem, async () => {
+      store().deleteHabit(a.id);
+      const written = JSON.parse(mem.get(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
+      expect(written.state.deletedIds).toEqual([a.id]);
+      store().resetAll();
+      await useStore.persist.rehydrate(); // resetAll also wrote, so the record is empty again
+      expect(store().deletedIds).toEqual([]);
+      mem.set(STORAGE_KEY, JSON.stringify(written));
+      await useStore.persist.rehydrate();
+      expect(store().deletedIds).toEqual([a.id]);
+    });
+  });
+});
+
+describe('importData and tombstones', () => {
+  it('a backup without deletedIds keeps the tombstones this device already has', () => {
+    const a = add('A');
+    store().deleteHabit(a.id);
+    const data = validBackup();
+    expect(data).not.toHaveProperty('deletedIds');
+    expect(store().importData(data)).toEqual({ ok: true });
+    expect(store().deletedIds).toEqual([a.id]);
+    expect(store().habits.map((h) => h.id)).toEqual(['a', 'b']);
+  });
+
+  it('unions the backup tombstones with the device ones, deduplicated, device first', () => {
+    const mine = add('Mine');
+    store().deleteHabit(mine.id);
+    expect(store().importData({ ...validBackup(), deletedIds: ['x', mine.id, 'x', 'y'] })).toEqual({ ok: true });
+    expect(store().deletedIds).toEqual([mine.id, 'x', 'y']);
+    expect(validateAppData(store().exportData()).ok).toBe(true);
+  });
+
+  it('a backup tombstone naming one of its own trackers is ignored: the tracker wins', () => {
+    expect(store().importData({ ...validBackup(), deletedIds: ['a', 'z'] })).toEqual({ ok: true });
+    expect(store().habits.map((h) => h.id)).toEqual(['a', 'b']);
+    expect(store().deletedIds).toEqual(['z']);
+    const preview = validateAppData({ ...validBackup(), deletedIds: ['a', 'z', 'z'] });
+    expect(preview.ok && preview.data.deletedIds).toEqual(['z']);
+  });
+
+  it.each<[string, unknown]>([
+    ['not an array', 'a'],
+    ['a non-string id', [1]],
+    ['a blank id', ['  ']],
+    ['an unsafe id', ['__proto__']],
+    ['null', null],
+  ])('rejects deletedIds that are %s and leaves the store untouched', (_label, deletedIds) => {
+    const keep = add('Keep');
+    const before = store();
+    const result = store().importData({ ...validBackup(), deletedIds });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/deletedIds/);
+    expect(store()).toBe(before);
+    expect(store().habits).toEqual([keep]);
+  });
+
+  it('restores a tracker whose id is tombstoned here under a new id, with its completions (re-key rule)', () => {
+    // This device deleted tracker "a" after the backup was taken; the backup still has "a" and its history.
+    useStore.setState({ deletedIds: ['a'] });
+    const backup = validBackup();
+    expect(store().importData(backup)).toEqual({ ok: true });
+
+    const restored = store().habits.find((h) => h.name === 'Gym');
+    expect(restored).toBeDefined();
+    if (!restored) return;
+    expect(restored.id).not.toBe('a');
+    expect(restored.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(restored).toEqual({ ...backup.habits[0], id: restored.id });
+    expect(store().completions[restored.id]).toEqual({ '2026-10-05': true, '2026-10-07': true });
+    expect(store().completions).not.toHaveProperty('a');
+    expect(store().habits.find((h) => h.id === 'b')).toEqual(backup.habits[1]);
+    expect(store().completions.b).toEqual({ '2026-09-20': true });
+    expect(store().deletedIds).toEqual(['a']); // the deletion stays final everywhere a synced copy might live
+    expect(validateAppData(store().exportData()).ok).toBe(true);
+  });
+
+  it('re-keys only the tombstoned trackers; a backup tombstone for the same id is simply kept', () => {
+    useStore.setState({ deletedIds: ['b'] });
+    expect(store().importData({ ...validBackup(), deletedIds: ['q'] })).toEqual({ ok: true });
+    const ids = store().habits.map((h) => h.id);
+    expect(ids[0]).toBe('a');
+    expect(ids[1]).not.toBe('b');
+    expect(store().deletedIds).toEqual(['b', 'q']);
+    expect(store().habits[1]).toMatchObject({ name: 'Read', archivedAt: '2026-10-10', note: '20 pages' });
+    expect(store().completions[ids[1] ?? '']).toEqual({ '2026-09-20': true });
+  });
+
+  it('tombstones the trackers it replaces, so a synced copy cannot bring them back', () => {
+    // "a" exists here under the same id (replaced in place, not tombstoned); "Old" is not in the backup.
+    useStore.setState({ habits: [{ ...validBackup().habits[0]!, name: 'Older Gym' }], completions: { a: { '2026-10-01': true } } });
+    const old = add('Old');
+    expect(store().importData({ ...validBackup(), deletedIds: ['q'] })).toEqual({ ok: true });
+    expect(store().habits.map((h) => h.id)).toEqual(['a', 'b']);
+    expect(store().habits[0]?.name).toBe('Gym');
+    expect(store().deletedIds).toEqual(['q', old.id]);
+    expect(store().completions).toEqual({ a: { '2026-10-05': true, '2026-10-07': true }, b: { '2026-09-20': true } });
+    expect(validateAppData(store().exportData()).ok).toBe(true);
+  });
+
+  it('a backup taken on this device re-imports byte for byte, tombstones included', () => {
+    const a = add('A');
+    const b = add('B');
+    store().setCompletion(b.id, '2026-10-05', true);
+    store().deleteHabit(a.id);
+    const exported = store().exportData();
+    const json = JSON.stringify(exported);
+    store().resetAll();
+    expect(store().importData(JSON.parse(json))).toEqual({ ok: true });
+    expect(store().habits).toEqual([b]);
+    expect(store().completions).toEqual({ [b.id]: { '2026-10-05': true } });
+    expect(store().deletedIds).toEqual([a.id]);
+    expect(JSON.stringify({ ...store().exportData(), exportedAt: exported.exportedAt })).toBe(json);
+  });
+
+  it('a failed import puts the previous tombstones back with everything else', () => {
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    try {
+      const a = add('A');
+      store().deleteHabit(a.id);
+      local.failure = quotaError();
+      expect(store().importData({ ...validBackup(), deletedIds: ['x'] }).ok).toBe(false);
+      expect(store().deletedIds).toEqual([a.id]);
+      expect(store().habits).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('exportData with tombstones', () => {
+  it('includes deletedIds, and the file still validates as a version-1 backup', () => {
+    const a = add('A');
+    const b = add('B');
+    store().deleteHabit(a.id);
+    const data = store().exportData();
+    expect(data.version).toBe(1);
+    expect(data.deletedIds).toEqual([a.id]);
+    expect(data.habits).toEqual([b]);
+    const result = validateAppData(JSON.parse(JSON.stringify(data)));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.deletedIds).toEqual([a.id]);
+  });
+
+  it('exports an empty tombstone list on a fresh device', () => {
+    expect(store().exportData().deletedIds).toEqual([]);
+  });
+});
+
+describe('applyRemote', () => {
+  const remoteHabit = (id: string, order: number, over: Partial<Habit> = {}): Habit => ({
+    id,
+    name: id.toUpperCase(),
+    emoji: 'r',
+    color: 'moss',
+    days: EVERY_DAY,
+    createdAt: '2026-10-01',
+    order,
+    ...over,
+  });
+
+  it('replaces habits, completions and tombstones wholesale and leaves settings alone', async () => {
+    const old = add('Old');
+    store().setCompletion(old.id, '2026-10-05', true);
+    store().setTheme('dark');
+    const data: LocalData = {
+      habits: [remoteHabit('a', 0, { note: 'n' }), remoteHabit('b', 1, { archivedAt: '2026-10-10' })],
+      completions: { a: { '2026-10-06': true } },
+      deletedIds: ['x', 'x', 'y'],
+    };
+    const mem = new Map<string, string>();
+    await withStorage(mem, () => {
+      store().applyRemote(data);
+    });
+    expect(store().habits).toBe(data.habits);
+    expect(store().completions).toBe(data.completions);
+    expect(store().deletedIds).toEqual(['x', 'y']);
+    expect(store().settings).toEqual({ theme: 'dark', installHintDismissed: false });
+    const written = JSON.parse(mem.get(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
+    expect(written.version).toBe(2);
+    expect(written.state.habits.map((h) => h.id)).toEqual(['a', 'b']);
+    expect(written.state.completions).toEqual({ a: { '2026-10-06': true } });
+    expect(written.state.deletedIds).toEqual(['x', 'y']);
+    expect(written.state.settings.theme).toBe('dark');
+    expect(validateAppData(store().exportData()).ok).toBe(true);
+  });
+
+  it('is a no-op when nothing changed: same references, no subscriber call, no persist write', async () => {
+    const a = add('A');
+    const b = add('B');
+    const c = add('C');
+    store().setCompletion(a.id, '2026-10-05', true);
+    store().deleteHabit(b.id);
+    store().deleteHabit(c.id);
+    const { habits, completions, deletedIds } = store();
+    const same = JSON.parse(JSON.stringify({ habits, completions, deletedIds })) as LocalData;
+    same.deletedIds.reverse(); // tombstone order never matters
+    const listener = vi.fn();
+    const unsubscribe = useStore.subscribe(listener);
+    const mem = new Map<string, string>();
+    try {
+      await withStorage(mem, () => {
+        store().applyRemote(same);
+        store().applyRemote({ habits, completions, deletedIds });
+      });
+    } finally {
+      unsubscribe();
+    }
+    expect(store().habits).toBe(habits);
+    expect(store().completions).toBe(completions);
+    expect(store().deletedIds).toBe(deletedIds);
+    expect(listener).not.toHaveBeenCalled();
+    expect(mem.size).toBe(0);
+  });
+
+  it('applies a change in any one of the three parts', () => {
+    const a = add('A');
+    const base = (): LocalData => ({ habits: [a], completions: {}, deletedIds: [] });
+
+    store().applyRemote({ ...base(), completions: { [a.id]: { '2026-10-05': true } } });
+    expect(isDone(store().completions, a.id, '2026-10-05')).toBe(true);
+
+    store().applyRemote({ ...base(), deletedIds: ['gone'] });
+    expect(store().completions).toEqual({});
+    expect(store().deletedIds).toEqual(['gone']);
+
+    store().applyRemote({ ...base(), habits: [{ ...a, name: 'Renamed' }] });
+    expect(store().habits[0]?.name).toBe('Renamed');
+    expect(store().deletedIds).toEqual([]);
+
+    store().applyRemote({ habits: [], completions: {}, deletedIds: [] });
+    expect(store().habits).toEqual([]);
+  });
+
+  it('what applyRemote installs is what exportData and the views see', () => {
+    const data: LocalData = {
+      habits: [remoteHabit('b', 1), remoteHabit('a', 0, { archivedAt: TODAY })],
+      completions: { b: { [TODAY]: true } },
+      deletedIds: ['gone'],
+    };
+    store().applyRemote(data);
+    expect(activeHabits(store().habits).map((h) => h.id)).toEqual(['b']);
+    expect(archivedHabits(store().habits).map((h) => h.id)).toEqual(['a']);
+    expect(dueHabits(store().habits, TODAY).map((h) => h.id)).toEqual(['b']);
+    expect(store().exportData()).toMatchObject({ habits: data.habits, completions: data.completions, deletedIds: ['gone'] });
+  });
+});
+
+describe('a failed import changes nothing anyone can observe', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('notifies no subscriber, so a sync engine never pushes a replacement that did not happen', () => {
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    const mine = add('Mine');
+    store().setCompletion(mine.id, '2026-10-14', true);
+    const seen: Array<{ habits: string[]; deletedIds: string[] }> = [];
+    const unsubscribe = useStore.subscribe((s) => {
+      seen.push({ habits: s.habits.map((h) => h.id), deletedIds: s.deletedIds });
+    });
+    local.failure = quotaError();
+    try {
+      expect(store().importData(validBackup())).toEqual({ ok: false, error: 'This backup is too large to store on this device.' });
+    } finally {
+      unsubscribe();
+    }
+    expect(seen).toEqual([]); // not even a replacement followed by a revert
+    expect(store().habits).toEqual([mine]);
+    expect(store().completions).toEqual({ [mine.id]: { '2026-10-14': true } });
+    expect(store().deletedIds).toEqual([]); // no tombstone for the tracker the import would have replaced
+    expect(lastStorageError()?.name).toBe('QuotaExceededError');
+  });
+
+  it('a successful import still notifies exactly once, with the final state', () => {
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    const mine = add('Mine');
+    const listener = vi.fn();
+    const unsubscribe = useStore.subscribe(listener);
+    try {
+      expect(store().importData(validBackup())).toEqual({ ok: true });
+    } finally {
+      unsubscribe();
+    }
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store().habits.map((h) => h.id)).toEqual(['a', 'b']);
+    expect(store().deletedIds).toEqual([mine.id]);
+    const written = JSON.parse(local.getItem(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
+    expect(written.state.habits.map((h) => h.id)).toEqual(['a', 'b']);
+    expect(written.version).toBe(2);
+  });
+});
+
+describe('tracker ids the cloud can hold (isValidId)', () => {
+  it('accepts ordinary ids up to 1500 UTF-8 bytes', () => {
+    for (const id of ['a', 'a-b_c.d', 'gym 2026', '日本', 'x'.repeat(1500), 'é'.repeat(750), '__x', 'x__', '_a_']) {
+      expect(isValidId(id), id.slice(0, 20)).toBe(true);
+    }
+  });
+
+  it('rejects blanks, prototype names and anything Firestore refuses as a document id', () => {
+    for (const id of ['', '   ', '__proto__', 'constructor', 'prototype', 'a/b', '/', '.', '..', '__x__', '____', 'x'.repeat(1501), 'é'.repeat(751), 7, null]) {
+      expect(isValidId(id), String(id).slice(0, 20)).toBe(false);
+    }
+  });
+
+  it('a backup with such an id is refused with a clear message, tombstones included', () => {
+    for (const id of ['gym/2026', '.', '..', '__x__', 'x'.repeat(1501)]) {
+      const data = validBackup();
+      data.habits = [{ ...(data.habits[0] as Habit), id }];
+      data.completions = {};
+      expect(store().importData(data), id.slice(0, 20)).toEqual({ ok: false, error: 'Tracker #1 has an invalid id.' });
+    }
+    expect(store().importData({ ...validBackup(), deletedIds: ['gym/2026'] })).toEqual({
+      ok: false,
+      error: '"deletedIds" must contain only tracker ids.',
+    });
+    expect(store().habits).toEqual([]);
+  });
+
+  it('hydration re-keys a stored tracker with such an id instead of dropping it, check-ins included', async () => {
+    await rehydrateFrom({
+      state: {
+        habits: [storedHabit({ id: 'gym/2026' }), storedHabit({ id: 'b', name: 'Read', order: 1 })],
+        completions: { 'gym/2026': { '2026-10-05': true }, b: { '2026-10-06': true } },
+        settings: DEFAULT_SETTINGS,
+        deletedIds: ['old/id', 'z'],
+      },
+      version: 2,
+    });
+    const [gym, read] = store().habits;
+    expect(gym?.name).toBe('Gym');
+    expect(gym?.id).not.toBe('gym/2026');
+    expect(isValidId(gym?.id)).toBe(true);
+    expect(read).toEqual(storedHabit({ id: 'b', name: 'Read', order: 1 }));
+    expect(store().completions).toEqual({ [gym?.id ?? '']: { '2026-10-05': true }, b: { '2026-10-06': true } });
+    expect(store().deletedIds).toEqual(['z']); // a tombstone for an id the cloud cannot hold protects nothing
+    expect(validateAppData(store().exportData()).ok).toBe(true);
+  });
+});
+
+describe('resetAll and the sync baseline', () => {
+  it('forgets what the sync engine knew about every account', () => {
+    writeBaseline('u1', { data: { habits: [], completions: {}, deletedIds: [] }, acked: [] });
+    writeBaseline('u2', { data: { habits: [], completions: {}, deletedIds: [] }, acked: ['a'] });
+    store().resetAll();
+    expect(readBaseline('u1')).toBeNull();
+    expect(readBaseline('u2')).toBeNull();
   });
 });

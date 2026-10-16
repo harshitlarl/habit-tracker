@@ -1,0 +1,51 @@
+# Netlify configuration for Momentum (SPEC §13.7).
+# The committed .env supplies the public Firebase web config at build time, so the site needs no
+# environment variables of its own. The app is served from "/" (no BASE_PATH).
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Node 24 satisfies package.json "engines" and the Firebase SDK's >=24.12; "24" resolves to the latest 24.x.
+  NODE_VERSION = "24"
+
+# Single-page app: any path that is not a real file serves index.html with a 200.
+# Existing files always win over a redirect unless it sets force = true, which this one does not.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Cache headers — the same set as firebase.json and vercel.json.
+# The service worker, the app shell and the manifest are always revalidated so a new deploy is
+# picked up on the next launch; hashed build output is immutable; icons are refreshed daily.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/icons/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"

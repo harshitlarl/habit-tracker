@@ -2,6 +2,13 @@ import { create } from 'zustand';
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware';
 import {
   HABIT_COLORS,
+  HABIT_EMOJI_MAX,
+  HABIT_NAME_MAX,
+  HABIT_NOTE_MAX,
+  isHabitColor,
+  isIdLike,
+  isValidId,
+  isWeekday,
   type AppData,
   type Completions,
   type DateKey,
@@ -14,6 +21,7 @@ import {
 import { addDays, isDateKey, isScheduled, todayKey } from './dates';
 import { newId } from './ids';
 import { isDone } from './selectors';
+import { clearAllBaselines } from './sync/baseline';
 import { sameData } from './sync/merge';
 import type { LocalData } from './sync/types';
 
@@ -23,12 +31,10 @@ export const DEFAULT_SETTINGS: Settings = { theme: 'system', installHintDismisse
 
 /*
  * Field limits, the same ones the editor enforces: a backup must not install a tracker the editor
- * could never have saved (and could not re-save without the owner retyping the field).
+ * could never have saved (and could not re-save without the owner retyping the field). They live in
+ * types.ts, shared with the cloud parser (sync/merge.ts), and are re-exported here for existing imports.
  */
-export const HABIT_NAME_MAX = 40;
-export const HABIT_NOTE_MAX = 40;
-/** In UTF-16 code units, matching the free-text emoji field's maxLength: room for a flag or a ZWJ family. */
-export const HABIT_EMOJI_MAX = 16;
+export { HABIT_EMOJI_MAX, HABIT_NAME_MAX, HABIT_NOTE_MAX } from './types';
 
 export interface HabitInput {
   name: string;
@@ -108,17 +114,8 @@ function scheduleDays(days: readonly Weekday[]): Weekday[] {
 const isSortedUnique = (days: readonly Weekday[]): boolean =>
   days.every((d, i) => i === 0 || d > (days[i - 1] ?? -1));
 
-/** Ids become object keys in `completions`; these names would re-prototype that object. */
-const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
-
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
-
-const isWeekday = (v: unknown): v is Weekday =>
-  typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 6;
-
-const isHabitColor = (v: unknown): v is HabitColor =>
-  typeof v === 'string' && (HABIT_COLORS as readonly string[]).includes(v);
 
 const isTheme = (v: unknown): v is Theme => v === 'system' || v === 'light' || v === 'dark';
 
@@ -140,9 +137,7 @@ export function validateAppData(raw: unknown): ValidationResult {
   }
   if (raw.deletedIds !== undefined) {
     if (!Array.isArray(raw.deletedIds)) return fail('"deletedIds" must be an array.');
-    if (!raw.deletedIds.every((v) => typeof v === 'string' && v.trim() !== '' && !UNSAFE_KEYS.has(v))) {
-      return fail('"deletedIds" must contain only tracker ids.');
-    }
+    if (!raw.deletedIds.every(isValidId)) return fail('"deletedIds" must contain only tracker ids.');
   }
 
   const ids = new Set<string>();
@@ -151,9 +146,7 @@ export function validateAppData(raw: unknown): ValidationResult {
     const where = `Tracker #${index + 1}`;
     if (!isRecord(item)) return fail(`${where} is not an object.`);
     const { id, name, emoji, color, note, days, createdAt, archivedAt, order } = item;
-    if (typeof id !== 'string' || id.trim() === '' || UNSAFE_KEYS.has(id)) {
-      return fail(`${where} has an invalid id.`);
-    }
+    if (!isValidId(id)) return fail(`${where} has an invalid id.`);
     if (ids.has(id)) return fail(`${where} duplicates the id "${id}".`);
     if (typeof name !== 'string' || name.trim() === '') return fail(`${where} needs a name.`);
     const trimmedName = name.trim();
@@ -271,6 +264,28 @@ function browserStorage(): Storage | undefined {
   }
 }
 
+/**
+ * Write the record persist would write for `state` (same key, same shape, same size) straight to the
+ * browser, before the store changes. Returns the browser's error when it refuses, null when the write
+ * landed or there is no browser storage to refuse it. `lastWriteError` follows the outcome, as it
+ * does for persist's own writes.
+ */
+function tryWriteRecord(state: PersistedState): Error | null {
+  const storage = browserStorage();
+  if (!storage) {
+    lastWriteError = null;
+    return null;
+  }
+  try {
+    storage.setItem(STORAGE_KEY, JSON.stringify({ state, version: PERSIST_VERSION }));
+    lastWriteError = null;
+    return null;
+  } catch (error) {
+    lastWriteError = error instanceof Error ? error : new Error(String(error));
+    return lastWriteError;
+  }
+}
+
 const safeStorage: StateStorage = {
   getItem: (name) => {
     try {
@@ -308,6 +323,81 @@ const safeStorage: StateStorage = {
     }
   },
 };
+
+/* ---------- hydration repair (SPEC §13.4: a damaged blob never crashes hydration) ---------- */
+
+/**
+ * A persisted tracker, repaired field by field. Only a record without an id is dropped (nothing could
+ * address it); an id the cloud could not hold (a hand-edited backup imported before ids were checked
+ * for that) is replaced by a fresh one, and every other damaged field falls back to something the
+ * editor could have saved, so a corrupted blob can neither crash a view nor produce an export that
+ * fails validateAppData. Valid records come through unchanged.
+ */
+function repairHabit(raw: unknown): Habit | null {
+  if (!isRecord(raw) || !isIdLike(raw.id)) return null;
+  const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, HABIT_NAME_MAX) : '';
+  const habit: Habit = {
+    id: isValidId(raw.id) ? raw.id : newId(),
+    name: name || 'Untitled',
+    emoji: typeof raw.emoji === 'string' ? raw.emoji.trim().slice(0, HABIT_EMOJI_MAX) : '',
+    color: isHabitColor(raw.color) ? raw.color : HABIT_COLORS[0],
+    days: scheduleDays(Array.isArray(raw.days) ? raw.days.filter(isWeekday) : []),
+    createdAt: isDateKey(raw.createdAt) ? raw.createdAt : todayKey(),
+    order: typeof raw.order === 'number' && Number.isFinite(raw.order) ? raw.order : 0,
+  };
+  const note = typeof raw.note === 'string' ? raw.note.trim().slice(0, HABIT_NOTE_MAX) : '';
+  if (note) habit.note = note;
+  if (isDateKey(raw.archivedAt)) habit.archivedAt = raw.archivedAt;
+  return habit;
+}
+
+/**
+ * Re-validate a persisted blob field by field: damaged trackers are repaired, duplicate ids keep
+ * their first record, orphan or malformed completions are dropped, settings fall back to `current`,
+ * tombstones are deduplicated and never name a tracker that is present. Hydration happens once at
+ * launch, when `current` is the initial state, so the blob (not memory) is the source of truth.
+ */
+function repairPersisted(persisted: unknown, current: PersistedState): PersistedState {
+  const p: Record<string, unknown> = isRecord(persisted) ? persisted : {};
+
+  const habits: Habit[] = [];
+  const ids = new Set<string>();
+  /** Stored id → the fresh id repairHabit gave a tracker the cloud could not address; its check-ins follow it. */
+  const rekeyed = new Map<string, string>();
+  for (const item of Array.isArray(p.habits) ? p.habits : []) {
+    const habit = repairHabit(item);
+    if (!habit) continue;
+    const storedId = isRecord(item) && typeof item.id === 'string' ? item.id : habit.id;
+    if (ids.has(habit.id) || rekeyed.has(storedId)) continue;
+    if (storedId !== habit.id) rekeyed.set(storedId, habit.id);
+    ids.add(habit.id);
+    habits.push(habit);
+  }
+
+  const completions: Completions = {};
+  if (isRecord(p.completions)) {
+    for (const [storedId, dates] of Object.entries(p.completions)) {
+      const habitId = rekeyed.get(storedId) ?? storedId;
+      if (!ids.has(habitId) || !isRecord(dates)) continue;
+      const set: Record<DateKey, true> = {};
+      for (const [k, v] of Object.entries(dates)) if (v === true && isDateKey(k)) set[k] = true;
+      if (Object.keys(set).length > 0) completions[habitId] = set;
+    }
+  }
+
+  const s: Record<string, unknown> = isRecord(p.settings) ? p.settings : {};
+  const settings: Settings = {
+    theme: isTheme(s.theme) ? s.theme : current.settings.theme,
+    installHintDismissed:
+      typeof s.installHintDismissed === 'boolean' ? s.installHintDismissed : current.settings.installHintDismissed,
+  };
+
+  const deletedIds = Array.isArray(p.deletedIds)
+    ? uniqueIds(p.deletedIds.filter(isValidId)).filter((id) => !ids.has(id))
+    : [];
+
+  return { habits, completions, settings, deletedIds };
+}
 
 /* ---------- store ---------- */
 
@@ -473,29 +563,36 @@ const useStore = create<StoreState>()(
           if (dates) completions[id] = dates;
           return id === h.id ? h : { ...h, id };
         });
-        const deletedIds = uniqueIds([...previous.deletedIds, ...(result.data.deletedIds ?? [])]);
-        // persist writes synchronously inside set(), so the flag reflects this write once it returns.
-        // (Read through the accessor: TS would otherwise keep the `null` narrowing across set().)
-        lastWriteError = null;
-        set({ habits, completions, settings, deletedIds });
-        const writeError = lastStorageError();
-        if (writeError) {
-          // Nothing reached the device: put the state the device still holds back, and say so.
-          set(previous);
-          return { ok: false, error: describeWriteError(writeError) };
-        }
+        // The trackers this import replaces are tombstoned too: "Replace" must hold on a signed-in
+        // device, where a tracker that merely vanished from the array would come straight back from
+        // the cloud. Locally the extra tombstones are inert metadata.
+        const kept = new Set(habits.map((h) => h.id));
+        const replaced = previous.habits.map((h) => h.id).filter((id) => !kept.has(id));
+        const deletedIds = uniqueIds([...previous.deletedIds, ...(result.data.deletedIds ?? []), ...replaced]);
+        const next: PersistedState = { habits, completions, settings, deletedIds };
+        // The device decides before anything changes: the exact record persist is about to write is
+        // written first. Should the browser refuse it (quota, storage disabled), the store is never
+        // set, so no subscriber — the sync engine included — ever sees a replacement that did not
+        // happen, and the tombstones for the trackers it would have replaced never reach the cloud.
+        const writeError = tryWriteRecord(next);
+        if (writeError) return { ok: false, error: describeWriteError(writeError) };
+        set(next);
         return { ok: true };
       },
 
-      resetAll: () =>
-        set({ habits: [], completions: {}, settings: { ...DEFAULT_SETTINGS }, deletedIds: [] }),
+      resetAll: () => {
+        // "Reset this device" also forgets what the sync engine knew about every account's cloud copy.
+        clearAllBaselines();
+        set({ habits: [], completions: {}, settings: { ...DEFAULT_SETTINGS }, deletedIds: [] });
+      },
 
-      applyRemote: (data) =>
-        set((s) => {
-          const current: LocalData = { habits: s.habits, completions: s.completions, deletedIds: s.deletedIds };
-          if (sameData(current, data)) return s;
-          return { habits: data.habits, completions: data.completions, deletedIds: uniqueIds(data.deletedIds) };
-        }),
+      // Compared BEFORE set(): persist writes storage on every set() call, even one whose updater
+      // returns the same state, and an unchanged snapshot must cost neither a write nor a render.
+      applyRemote: (data) => {
+        const { habits, completions, deletedIds } = get();
+        if (sameData({ habits, completions, deletedIds }, data)) return;
+        set({ habits: data.habits, completions: data.completions, deletedIds: uniqueIds(data.deletedIds) });
+      },
     }),
     {
       name: STORAGE_KEY,
@@ -514,18 +611,7 @@ const useStore = create<StoreState>()(
         const deletedIds = version >= 2 && Array.isArray(p.deletedIds) ? p.deletedIds : [];
         return { ...p, deletedIds } as PersistedState;
       },
-      merge: (persisted, current) => {
-        const p = (persisted ?? {}) as Partial<Record<keyof PersistedState, unknown>>;
-        return {
-          ...current,
-          habits: Array.isArray(p.habits) ? (p.habits as Habit[]) : current.habits,
-          completions: isRecord(p.completions) ? (p.completions as Completions) : current.completions,
-          settings: { ...current.settings, ...(isRecord(p.settings) ? p.settings : {}) },
-          deletedIds: Array.isArray(p.deletedIds)
-            ? uniqueIds(p.deletedIds.filter((v): v is string => typeof v === 'string'))
-            : current.deletedIds,
-        };
-      },
+      merge: (persisted, current) => ({ ...current, ...repairPersisted(persisted, current) }),
     },
   ),
 );

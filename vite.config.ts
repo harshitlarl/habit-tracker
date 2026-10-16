@@ -7,6 +7,20 @@ import { VitePWA } from 'vite-plugin-pwa';
 // use `import.meta.env.BASE_URL` instead.
 export default defineConfig({
   base: process.env.BASE_PATH ?? '/',
+  build: {
+    // The Firebase SDK is reached only through the dynamic imports in src/lib/sync/firebase.ts
+    // (SPEC §13.1), so it already lands outside the entry chunk; naming the group keeps that split
+    // visible in dist/ (firebase-[hash].js) and the chunk is never modulepreloaded by index.html.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [{ name: 'firebase', test: /node_modules[\\/](?:@firebase|firebase)[\\/]/ }],
+        },
+      },
+    },
+    // That lazy chunk is ~700 kB minified (Firestore alone is most of it); the entry stays well under the default 500 kB.
+    chunkSizeWarningLimit: 800,
+  },
   plugins: [
     react(),
     VitePWA({
