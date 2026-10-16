@@ -14,6 +14,8 @@ import {
 import { addDays, isDateKey, isScheduled, todayKey } from './dates';
 import { newId } from './ids';
 import { isDone } from './selectors';
+import { sameData } from './sync/merge';
+import type { LocalData } from './sync/types';
 
 export const STORAGE_KEY = 'momentum-v1';
 
@@ -47,6 +49,11 @@ export interface StoreState {
   habits: Habit[];
   completions: Completions;
   settings: Settings;
+  /**
+   * Tombstones (SPEC §13.4): ids of trackers deleted on this device, or learned from the cloud.
+   * Kept so cloud sync never resurrects a deleted tracker. Cleared only by resetAll.
+   */
+  deletedIds: string[];
 
   addHabit: (input: HabitInput) => Habit;
   updateHabit: (id: string, patch: HabitPatch) => void;
@@ -63,10 +70,20 @@ export interface StoreState {
 
   exportData: () => AppData;
   importData: (raw: unknown) => ImportResult;
+  /** Local only: wipes trackers, completions, tombstones and settings on this device. */
   resetAll: () => void;
+
+  /**
+   * Sync engine only (SPEC §13.4): replace habits, completions and tombstones wholesale with the
+   * reconciled cloud state. No-op (no set, no persist write) when nothing changed.
+   */
+  applyRemote: (data: LocalData) => void;
 }
 
-type PersistedState = Pick<StoreState, 'habits' | 'completions' | 'settings'>;
+type PersistedState = Pick<StoreState, 'habits' | 'completions' | 'settings' | 'deletedIds'>;
+/** What a version-1 (pre-sync) persisted blob looked like. */
+type PersistedStateV1 = Pick<StoreState, 'habits' | 'completions' | 'settings'>;
+export const PERSIST_VERSION = 2;
 
 /* ---------- helpers ---------- */
 
@@ -120,6 +137,12 @@ export function validateAppData(raw: unknown): ValidationResult {
   if (!isRecord(raw.settings)) return fail('"settings" must be an object.');
   if (raw.exportedAt !== undefined && typeof raw.exportedAt !== 'string') {
     return fail('"exportedAt" must be a string.');
+  }
+  if (raw.deletedIds !== undefined) {
+    if (!Array.isArray(raw.deletedIds)) return fail('"deletedIds" must be an array.');
+    if (!raw.deletedIds.every((v) => typeof v === 'string' && v.trim() !== '' && !UNSAFE_KEYS.has(v))) {
+      return fail('"deletedIds" must contain only tracker ids.');
+    }
   }
 
   const ids = new Set<string>();
@@ -202,7 +225,16 @@ export function validateAppData(raw: unknown): ValidationResult {
     settings: { theme, installHintDismissed },
   };
   if (typeof raw.exportedAt === 'string') data.exportedAt = raw.exportedAt;
+  if (Array.isArray(raw.deletedIds)) {
+    // Validated above; a tracker present in the file is, by definition, not deleted.
+    data.deletedIds = uniqueIds(raw.deletedIds as string[]).filter((id) => !ids.has(id));
+  }
   return { ok: true, data };
+}
+
+/** Unique, insertion order kept. */
+export function uniqueIds(idList: readonly string[]): string[] {
+  return [...new Set(idList)];
 }
 
 /* ---------- storage: localStorage when it works, in-memory otherwise (tests, private mode) ---------- */
@@ -285,6 +317,7 @@ const useStore = create<StoreState>()(
       habits: [],
       completions: {},
       settings: { ...DEFAULT_SETTINGS },
+      deletedIds: [],
 
       addHabit: (input) => {
         const { habits } = get();
@@ -355,11 +388,17 @@ const useStore = create<StoreState>()(
           }),
         })),
 
+      // Leaves a tombstone so a synced copy of the tracker cannot come back (SPEC §13.4).
       deleteHabit: (id) =>
         set((s) => {
+          if (!s.habits.some((h) => h.id === id)) return s;
           const completions = { ...s.completions };
           delete completions[id];
-          return { habits: s.habits.filter((h) => h.id !== id), completions };
+          return {
+            habits: s.habits.filter((h) => h.id !== id),
+            completions,
+            deletedIds: uniqueIds([...s.deletedIds, id]),
+          };
         }),
 
       reorderHabits: (orderedIds) =>
@@ -408,23 +447,37 @@ const useStore = create<StoreState>()(
       dismissInstallHint: () => set((s) => ({ settings: { ...s.settings, installHintDismissed: true } })),
 
       exportData: () => {
-        const { habits, completions, settings } = get();
-        return { version: 1, habits, completions, settings, exportedAt: new Date().toISOString() };
+        const { habits, completions, settings, deletedIds } = get();
+        return { version: 1, habits, completions, settings, deletedIds, exportedAt: new Date().toISOString() };
       },
 
       importData: (raw) => {
         const result = validateAppData(raw);
         if (!result.ok) return { ok: false, error: result.error };
-        const { habits, completions, settings } = result.data;
+        const { settings } = result.data;
         const previous: PersistedState = {
           habits: get().habits,
           completions: get().completions,
           settings: get().settings,
+          deletedIds: get().deletedIds,
         };
+        // Tombstones are the union of what this device knows and what the backup carries. A tracker
+        // in the backup whose id is tombstoned here was deleted after that backup was taken: it is
+        // restored under a NEW id (same name, same history) so the deletion stays final everywhere
+        // a synced copy might live, while the owner still gets their tracker back.
+        const tombstoned = new Set(previous.deletedIds);
+        const completions: Completions = {};
+        const habits = result.data.habits.map((h) => {
+          const id = tombstoned.has(h.id) ? newId() : h.id;
+          const dates = result.data.completions[h.id];
+          if (dates) completions[id] = dates;
+          return id === h.id ? h : { ...h, id };
+        });
+        const deletedIds = uniqueIds([...previous.deletedIds, ...(result.data.deletedIds ?? [])]);
         // persist writes synchronously inside set(), so the flag reflects this write once it returns.
         // (Read through the accessor: TS would otherwise keep the `null` narrowing across set().)
         lastWriteError = null;
-        set({ habits, completions, settings });
+        set({ habits, completions, settings, deletedIds });
         const writeError = lastStorageError();
         if (writeError) {
           // Nothing reached the device: put the state the device still holds back, and say so.
@@ -434,25 +487,43 @@ const useStore = create<StoreState>()(
         return { ok: true };
       },
 
-      resetAll: () => set({ habits: [], completions: {}, settings: { ...DEFAULT_SETTINGS } }),
+      resetAll: () =>
+        set({ habits: [], completions: {}, settings: { ...DEFAULT_SETTINGS }, deletedIds: [] }),
+
+      applyRemote: (data) =>
+        set((s) => {
+          const current: LocalData = { habits: s.habits, completions: s.completions, deletedIds: s.deletedIds };
+          if (sameData(current, data)) return s;
+          return { habits: data.habits, completions: data.completions, deletedIds: uniqueIds(data.deletedIds) };
+        }),
     }),
     {
       name: STORAGE_KEY,
-      version: 1,
+      version: PERSIST_VERSION,
       storage: createJSONStorage(() => safeStorage),
       partialize: (s): PersistedState => ({
         habits: s.habits,
         completions: s.completions,
         settings: s.settings,
+        deletedIds: s.deletedIds,
       }),
-      migrate: (persisted) => persisted as PersistedState,
+      // v1 → v2: tombstones did not exist yet. Anything older or partial gets an empty list; `merge`
+      // below re-validates every field, so a damaged blob can never crash hydration.
+      migrate: (persisted, version) => {
+        const p = (persisted ?? {}) as Partial<PersistedStateV1> & { deletedIds?: unknown };
+        const deletedIds = version >= 2 && Array.isArray(p.deletedIds) ? p.deletedIds : [];
+        return { ...p, deletedIds } as PersistedState;
+      },
       merge: (persisted, current) => {
-        const p = (persisted ?? {}) as Partial<PersistedState>;
+        const p = (persisted ?? {}) as Partial<Record<keyof PersistedState, unknown>>;
         return {
           ...current,
-          habits: Array.isArray(p.habits) ? p.habits : current.habits,
+          habits: Array.isArray(p.habits) ? (p.habits as Habit[]) : current.habits,
           completions: isRecord(p.completions) ? (p.completions as Completions) : current.completions,
           settings: { ...current.settings, ...(isRecord(p.settings) ? p.settings : {}) },
+          deletedIds: Array.isArray(p.deletedIds)
+            ? uniqueIds(p.deletedIds.filter((v): v is string => typeof v === 'string'))
+            : current.deletedIds,
         };
       },
     },

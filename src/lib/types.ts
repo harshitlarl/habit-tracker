@@ -31,4 +31,6 @@ export interface AppData {
   completions: Completions;
   settings: Settings;
   exportedAt?: string;
+  /** Tombstones of deleted trackers (since cloud sync). Absent in older backups. */
+  deletedIds?: string[];
 }

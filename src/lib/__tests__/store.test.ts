@@ -96,10 +96,10 @@ beforeEach(() => {
 });
 
 describe('persistence wiring', () => {
-  it('uses the momentum-v1 key at version 1 and has hydrated', () => {
+  it('uses the momentum-v1 key at version 2 and has hydrated', () => {
     expect(STORAGE_KEY).toBe('momentum-v1');
     expect(useStore.persist.getOptions().name).toBe('momentum-v1');
-    expect(useStore.persist.getOptions().version).toBe(1);
+    expect(useStore.persist.getOptions().version).toBe(2);
     expect(useStore.persist.hasHydrated()).toBe(true);
   });
 
@@ -134,8 +134,8 @@ describe('persistence wiring', () => {
       // Subsequent writes land in storage, partialized to data only.
       store().setTheme('light');
       const written = JSON.parse(mem.get(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
-      expect(written.version).toBe(1);
-      expect(Object.keys(written.state).sort()).toEqual(['completions', 'habits', 'settings']);
+      expect(written.version).toBe(2);
+      expect(Object.keys(written.state).sort()).toEqual(['completions', 'deletedIds', 'habits', 'settings']);
       expect(written.state.settings.theme).toBe('light');
     } finally {
       useStore.persist.setOptions({ storage: original });
@@ -153,7 +153,7 @@ describe('persistence wiring', () => {
       await useStore.persist.rehydrate();
       expect(store().settings).toEqual({ theme: 'light', installHintDismissed: true });
       const written = JSON.parse(mem.get(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
-      expect(written.version).toBe(1);
+      expect(written.version).toBe(2);
     } finally {
       useStore.persist.setOptions({ storage: original });
     }
@@ -558,7 +558,7 @@ describe('export / import', () => {
     const h = add('A');
     store().setCompletion(h.id, '2026-10-05', true);
     const data = store().exportData();
-    expect(Object.keys(data).sort()).toEqual(['completions', 'exportedAt', 'habits', 'settings', 'version']);
+    expect(Object.keys(data).sort()).toEqual(['completions', 'deletedIds', 'exportedAt', 'habits', 'settings', 'version']);
     expect(data.version).toBe(1);
     expect(data.habits).toEqual([h]);
     expect(data.completions).toEqual({ [h.id]: { '2026-10-05': true } });

@@ -278,3 +278,137 @@ standalone, not dismissed).
 - Accessibility: every control has a label; tap targets ≥44px; text contrast ≥4.5:1; reduced motion respected.
 - Works offline after first load; data survives reload; iOS "Add to Home Screen" opens standalone with the
   correct icon, title and status-bar treatment; the deployed app works under the `/habit-tracker/` base path.
+
+## 13. Phase 2 — Optional cloud sync (Firebase) and multi-host packaging
+
+### 13.1 Principle
+Local-first stays exactly as it is. Without signing in, nothing changes. Signing in (Settings → "Sync across
+devices") mirrors the local store to Firestore and keeps all the owner's devices in sync, including offline
+queuing. Firebase code is lazy-loaded (dynamic import) so the local-only experience does not pay for it:
+only `import type` from `firebase/*` may appear at the top of any file; the SDK reaches the bundle solely
+through the dynamic imports inside `loadFirebase()`.
+
+### 13.2 Firebase services (Spark free tier, no billing) — project `momentum-harshitlarl`, Firestore in asia-south1
+- Auth: Email/Password only — it works inside iOS standalone PWAs (no popups, no redirects). Password reset by email.
+- Firestore with persistent local cache:
+  `initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) })`,
+  falling back to `memoryLocalCache()` when that throws (private mode, unsupported browser).
+- Hosting via `firebase.json` (public dist, SPA rewrite, cache headers). Rules in `firestore.rules`.
+- Config via Vite env in `.env` (public values — security lives in the rules): `VITE_FIREBASE_API_KEY`,
+  `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID`. `.env` IS committed.
+  `isSyncConfigured()` is false when any is missing → the entire sync UI is hidden and no Firebase code loads.
+
+### 13.3 Firestore data model
+```
+users/{uid}/habits/{habitId}:
+  { id, name, emoji, color, note?, days, createdAt, archivedAt?, order,
+    completions: { [dateKey]: true },     // map of LOCAL calendar dates
+    deleted: boolean,                     // tombstone — sync never hard-deletes (only "Delete cloud data" does)
+    updatedAt: <serverTimestamp> }
+```
+Rules: a signed-in user may read/write only `users/{uid}/**` where `uid == request.auth.uid`; everything
+else is denied. Field validation in rules is deliberately minimal: the data is owner-only, and a batch write
+must never be partially rejected by a rule the client did not anticipate. The client validates instead
+(`parseRemoteDoc` on read, the store on write).
+
+### 13.4 Local store additions — IMPLEMENTED in `src/lib/store.ts` (persist version 2)
+- `deletedIds: string[]` tombstones — `deleteHabit` appends (deduplicated); `resetAll` clears; `exportData`
+  includes it; `importData` keeps the union of the device's and the backup's tombstones.
+- `importData` and tombstones: a tracker in the backup whose id is tombstoned on this device is restored under a
+  NEW id (same fields, same completions) so the deletion stays final everywhere a synced copy might live.
+- `applyRemote(data: LocalData)` — wholesale replace of habits, completions and deletedIds; used only by the
+  sync engine; no-op (no set, no persist write) when `sameData()` says nothing changed.
+- `AppData` gains optional `deletedIds?: string[]` (version stays 1: old files import, new files import on old builds).
+- Persist `migrate` v1→v2 adds `deletedIds: []`; `merge` re-validates every field (a damaged blob never crashes hydration).
+- `resetAll()` now means "reset this device" — local only. The UI signs out first when signed in.
+
+### 13.5 Sync module — `src/lib/sync/` (exact contract in `src/lib/sync/types.ts`; stubs carry every signature)
+Types: `LocalData { habits; completions; deletedIds }`, `RemoteHabit = Habit & { completions: Record<DateKey, true>;
+deleted: boolean; updatedAt?: unknown }`, `PushOp` (`setHabit` | `addCompletion` | `removeCompletion` | `tombstone`),
+`MergeResult { merged; toPush }`, `SyncStatus`, `SyncUser { uid; email }`, `SyncState`.
+- `firebase.ts`: `isSyncConfigured(): boolean` (done), `loadFirebase(): Promise<{ app, auth, db }>` — dynamic-imports
+  firebase/app, firebase/auth, firebase/firestore once (memoised promise).
+- `syncStore.ts` (done; zustand, NOT persisted): `SyncState` + `setStatus(status, error?)`, `setUser`, `setPending`,
+  `markSynced(at)`, `setError(message)`. Initial status `'off'` when not configured, else `'signed-out'`.
+- `auth.ts`: `signIn(email, pw)`, `signUp(email, pw)`, `resetPassword(email)`, `signOutUser()`,
+  `onAuthChanged(cb): Promise<() => void>`, `friendlyAuthError(error: unknown): string` — maps auth/invalid-email,
+  auth/user-not-found, auth/wrong-password, auth/invalid-credential, auth/email-already-in-use, auth/weak-password,
+  auth/too-many-requests, auth/network-request-failed; anything else → one calm generic sentence. Each wrapper
+  trims the email and rethrows `new Error(friendlyAuthError(e))`.
+- `merge.ts` (PURE, no Firebase imports, fully unit-tested):
+  `parseRemoteDoc(id, data: unknown): RemoteHabit | null` — validates one raw document (never throws; null when unusable);
+  `remoteToLocal(remote)` — non-deleted docs → habits (strip completions/deleted/updatedAt) + completions (true-valued
+  keys only); deleted docs → deletedIds;
+  `mergeSnapshots(local, remote) → { merged, toPush }` — tombstones = union of both sides and always win; habits =
+  union by id excluding tombstoned ids, REMOTE fields win for ids on both sides, completions unioned per habit;
+  habits sorted by order, then createdAt, then id, re-numbered 0..n-1 only if duplicates exist; `toPush` = `setHabit`
+  for local-only habits, `tombstone` for ids tombstoned locally that exist remotely as non-deleted docs (never for
+  ids the remote has never seen), `addCompletion` for local completions missing remotely;
+  `diffForPush(prev, next)` — `setHabit` for added/changed habits (field comparison), `addCompletion`/`removeCompletion`
+  per key (only for habits present in `next`), `tombstone` for ids newly in `next.deletedIds`; a habit removed
+  without a tombstone produces no op;
+  `sameData(a, b)` (done, with `sameHabit`, `sameCompletions`) — deep equality, order-insensitive for deletedIds.
+- `engine.ts`: `startSync(uid)` / `stopSync()` / `deleteCloudData(uid)`:
+  1. `onSnapshot(collection(db,'users',uid,'habits'), { includeMetadataChanges: true }, …)`; status `'connecting'`
+     until the first snapshot.
+  2. Until the first SERVER-confirmed snapshot (`fromCache === false`): `mergeSnapshots(local, remote)`,
+     `applyRemote(merged)`, execute `toPush`.
+  3. After that, remote is authoritative: `applyRemote(remoteToLocal(remote))`; `pending = hasPendingWrites`;
+     `status = fromCache ? 'offline' : 'synced'`; `markSynced(Date.now())` when server-confirmed.
+  4. `useStore.subscribe` → when habits/completions/deletedIds change and we are not applying remote,
+     `diffForPush(lastPushed, current)` → `writeBatch` in chunks of ≤ 400 ops:
+     `setHabit` → `set(ref, { ...habitFields, updatedAt: serverTimestamp() }, { merge: true })` — never writes `deleted`;
+     `addCompletion` → `set(ref, { completions: { [k]: true } }, { merge: true })`;
+     `removeCompletion` → `update(ref, { ['completions.' + k]: deleteField() })` (ignore not-found);
+     `tombstone` → `set(ref, { deleted: true, updatedAt: serverTimestamp() }, { merge: true })`.
+     `lastPushed` is updated after every apply and every successful push.
+  5. Loop guard: module flag `applyingRemote` + `sameData` before `applyRemote`, so echoes never re-push.
+     Listener errors (permission-denied, …) → `setError(friendly message)`. `stopSync()` unsubscribes both the
+     listener and the store subscription and resets module state (safe to call twice; sign-out → sign-in as
+     another user must not see stale `lastPushed`).
+  `deleteCloudData(uid)`: read all docs under `users/{uid}/habits` and delete them in chunked batches.
+- `bootstrap.ts`: `initSync()` — called from `main.tsx` after render; if `!isSyncConfigured()` set status `'off'`
+  and return; else `setTimeout(0)` → `loadFirebase` → `onAuthStateChanged`: user → `setUser`, `startSync(uid)`;
+  null → `stopSync()`, `setUser(null)`, status `'signed-out'`. Never throws, never blocks rendering.
+
+### 13.6 UI — Settings → "Sync across devices" (`src/features/manage/SyncSection.tsx` + `.css`)
+- Hidden when `!isSyncConfigured()`.
+- Signed out: one-line explainer ("Back up and sync your trackers across your devices. Only you can read your data."),
+  email (type email, autocomplete username, inputmode email) + password (autocomplete current-password) inputs at
+  ≥16px, primary "Sign in", subtle "Create account", "Forgot password?" → reset email with inline confirmation;
+  friendly inline errors in ember-ink; disabled + busy state while a request runs; Enter submits.
+- Signed in: the account email; status line with a small coloured dot — "Synced · just now" / "Synced · 5 min ago"
+  (relative, refreshed every 30 s, interval cleaned up) / "Syncing…" / "Offline — changes will sync when you're back
+  online" / the error text; "Sign out" (keeps local data); "Delete cloud data" (two-step inline confirm → `deleteCloudData`
+  → `signOutUser`).
+- Existing "Reset all data" → "Reset this device" (signs out first when signed in; the confirmation says so).
+  Import confirmation copy mentions "and syncs to your account" when signed in.
+
+### 13.7 Hosting files
+- `firebase.json` (hosting: public "dist", ignore, rewrites `**` → `/index.html`, headers: `/sw.js`, `/index.html`,
+  `/manifest.webmanifest` → `Cache-Control: no-cache`; `/assets/**` → `public, max-age=31536000, immutable`;
+  `/icons/**` → `public, max-age=86400`; firestore: rules + indexes), `.firebaserc` (default `momentum-harshitlarl`),
+  `firestore.rules`, `firestore.indexes.json`.
+- `vercel.json` (SPA rewrite for paths without a file extension, excluding assets/ and icons/; same cache headers),
+  `netlify.toml` (build command, publish dist, `/*` → `/index.html` 200, same headers).
+- package.json scripts: `deploy:firebase` = `npm run build && firebase deploy --only hosting,firestore`;
+  `deploy:rules` = `firebase deploy --only firestore:rules`. Live URLs: https://momentum-harshitlarl.web.app and
+  https://harshitlarl.github.io/habit-tracker/ (GitHub Actions, `BASE_PATH=/habit-tracker/`).
+
+### 13.8 Tests
+- Unit (vitest, no Firebase SDK needed): `parseRemoteDoc` (good doc, missing fields, wrong types, extra keys);
+  `remoteToLocal`; `mergeSnapshots` — local-only, remote-only, both (completions union, remote fields win), tombstone on
+  either side, duplicate orders, never tombstone unknown docs; `diffForPush` — added habit, edited fields, completion
+  added/removed, tombstone, habit removed without tombstone, no-op; `sameData`; `friendlyAuthError`; store migrate
+  v1→v2, `deleteHabit` tombstones, `importData` with/without `deletedIds` and the re-key rule, `applyRemote` no-op/replace,
+  `exportData` includes `deletedIds`.
+- e2e (Playwright, WebKit iPhone 14): with env configured the sign-in form renders in Settings and nothing else
+  changes; a real-backend spec signs up a throwaway account, syncs between two contexts in realtime, deletes cloud
+  data, and always cleans the account up (Identity Toolkit REST `accounts:delete`).
+
+### 13.9 Phase-2 file ownership (parallel work — never edit files you don't own)
+- **sync-core**: `src/lib/store.ts`, `src/lib/types.ts`, `src/lib/selectors.ts`, `src/lib/sync/merge.ts`, `src/lib/__tests__/**`.
+- **sync-firebase**: `src/lib/sync/firebase.ts`, `syncStore.ts`, `auth.ts`, `engine.ts`, `bootstrap.ts`, `src/main.tsx`, `src/vite-env.d.ts`.
+- **sync-ui**: `src/features/manage/**`.
+- **hosting**: `firebase.json`, `.firebaserc`, `firestore.rules`, `firestore.indexes.json`, `vercel.json`, `netlify.toml`,
+  `package.json` (scripts only), `README.md` ("Hosting & sync" section), `.gitignore`.
