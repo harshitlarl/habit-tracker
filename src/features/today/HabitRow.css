@@ -1,0 +1,110 @@
+/* One tracker line on Today. Hairline below; the list supplies the opening hairline. */
+.habit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: 76px;
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer; /* also makes iOS Safari deliver delegated clicks to this non-control element */
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.habit-row__emoji {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--tone-soft);
+  font-size: 23px;
+  line-height: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  transition:
+    opacity 220ms ease,
+    transform 160ms ease;
+}
+
+/* No emoji saved: the tracker's initial, set in the display face and its colour. */
+.habit-row__emoji--initial {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 21px;
+  color: var(--tone);
+}
+
+.habit-row:active .habit-row__emoji {
+  transform: scale(0.94);
+}
+
+.habit-row__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.habit-row__name {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  transition: color 200ms ease;
+}
+
+.habit-row__meta {
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.habit-row__bonus {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+/* "🔥 7" — flame icon plus the count, ember on ember-soft (≥5.6:1 in both themes). */
+.habit-row__streak {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  min-height: 26px;
+  padding: 0 9px 0 7px;
+  border-radius: var(--r-pill);
+  background: var(--ember-soft);
+  color: var(--ember-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.habit-row__check {
+  display: inline-flex;
+  flex: none;
+  margin-right: -2px;
+}
+
+/* Done: the text quiets down, the Check stays vivid, nothing moves. */
+.habit-row.is-done .habit-row__name {
+  color: var(--ink-2);
+}
+
+.habit-row.is-done .habit-row__emoji {
+  opacity: 0.6;
+}

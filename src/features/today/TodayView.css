@@ -1,0 +1,134 @@
+/* Today — the journal's front page. Layout, pull-quote, sections, collapsible and the "+" FAB.
+   Rows live in HabitRow.css. */
+
+.view.today {
+  /* Room for the floating "+" (56px, 16px above the tab bar) so it never covers the last row. */
+  padding-bottom: calc(var(--s-7) + 72px);
+}
+
+.today__title {
+  min-width: 0;
+}
+
+.today__date {
+  margin-top: var(--s-2);
+}
+
+.today__ring {
+  margin-top: 4px;
+}
+
+/* ---------- Motivation pull-quote ---------- */
+.today__motivation {
+  margin: var(--s-2) 0 var(--s-7);
+  padding-left: var(--s-4);
+  border-left: 2px solid var(--ember);
+}
+
+.today__motivation .quote {
+  text-wrap: pretty;
+}
+
+.today__motivation[data-tone='celebrate'] .quote {
+  color: var(--accent-text);
+}
+
+.today__motivation-body {
+  margin-top: 6px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+/* ---------- Sections ---------- */
+.today__section + .today__section {
+  margin-top: var(--s-6);
+}
+
+.today__section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  min-height: 24px;
+  margin-bottom: var(--s-1);
+}
+
+.today__list {
+  border-top: 1px solid var(--line);
+}
+
+.today__rest {
+  padding: var(--s-4) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+  color: var(--ink-2);
+}
+
+/* ---------- "Not scheduled today" disclosure ---------- */
+.today__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  min-height: 44px;
+  border-radius: var(--r-sm);
+  transition: color 160ms ease;
+}
+
+.today__toggle:active .small-caps {
+  color: var(--ink);
+}
+
+.today__toggle-count {
+  padding-left: 2px;
+}
+
+/* Sits right after the count (not at the far right) so the floating "+" never hides it. */
+.today__chevron {
+  color: var(--ink-2);
+  transition: transform 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.today__toggle[aria-expanded='true'] .today__chevron {
+  transform: rotate(90deg);
+}
+
+/* ---------- Floating "+" ---------- */
+.fab {
+  position: fixed;
+  z-index: 15; /* under the tab bar (20) and sheets (50) */
+  /* Right gutter of the content column, or the safe area, whichever is larger. */
+  right: max(var(--gutter), env(safe-area-inset-right, 0px), calc((100vw - var(--content-max)) / 2 + var(--gutter)));
+  bottom: calc(var(--bottom-stack-h) + var(--s-4));
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  box-shadow:
+    var(--shadow),
+    0 1px 2px rgba(0, 0, 0, 0.12);
+  transition:
+    transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 160ms ease;
+}
+
+.fab:active {
+  transform: scale(0.92);
+}
+
+@media (hover: hover) {
+  .fab:hover {
+    filter: brightness(1.06);
+  }
+}
+
+/* ---------- Empty state ---------- */
+.today__empty {
+  padding-top: var(--s-4);
+}

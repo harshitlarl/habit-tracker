@@ -1,0 +1,154 @@
+/* Momentum — design tokens ("warm editorial journal")
+   :root = light. html[data-theme="dark"] = dark.
+   App.tsx sets data-theme on <html> from settings; 'system' resolves via prefers-color-scheme
+   and follows the OS live. The media-query block below gives dark-OS users the right tokens
+   before React runs (no light flash); it is skipped once an explicit light theme is set. */
+
+:root {
+  color-scheme: light;
+
+  --bg: #F4EEE2;
+  --surface: #FBF7EF;
+  --surface-2: #EFE7D8;
+  --surface-glass: rgba(251, 247, 239, 0.9); /* tab bar glass; 0.9 keeps labels clean where blur is weak */
+  --seg-thumb: #FBF7EF; /* SegmentedControl thumb: the raised surface */
+  --ink: #211B17;
+  --ink-2: #5F554D;
+  --ink-3: #9A8F85; /* 2.7:1 on paper: non-text marks only (the unscheduled dash, hover borders) */
+  --line: rgba(33, 27, 23, 0.10);
+  --line-strong: rgba(33, 27, 23, 0.50);
+  --ember: #D6602F;
+  --ember-soft: #F5DCCB;
+  --ember-ink: #8E3C17;
+  --shadow: 0 10px 30px rgba(60, 40, 20, 0.10);
+  --scrim: rgba(33, 27, 23, 0.38); /* sheet backdrop */
+
+  /* Accessible accent derivatives (≥4.5:1 for text, ≥3:1 for graphics on --bg/--surface). */
+  --accent-text: #B14A1E;   /* ember-family text on paper */
+  --accent-solid: #BE4F1F;  /* solid fills carrying --on-accent text */
+  --on-accent: #FFF7EE;
+  --danger: #A8352B;
+  --danger-soft: #F6DAD6;
+
+  --texture-opacity: 0.035;
+  --texture-blend: multiply;
+
+  /* Habit colours — use via .tone-<name> (sets --tone / --tone-soft) */
+  --c-terracotta: #D6602F; --c-terracotta-soft: #F5DCCB;
+  /* Ochre and sage sit deeper than the brief (#C9962B, #7A9A6A) so filled marks and the check
+     drawn on them clear 3:1 on paper, like terracotta and rose. The tints are unchanged. */
+  --c-ochre: #A87C22;      --c-ochre-soft: #F3E5C2;
+  --c-sage: #6E8C5F;       --c-sage-soft: #DDE7D3;
+  --c-slate: #5C7D97;      --c-slate-soft: #D6E1EA;
+  --c-plum: #8A5A83;       --c-plum-soft: #E6D6E3;
+  --c-rose: #C4667A;       --c-rose-soft: #F2D6DD;
+  --c-moss: #4F7B5C;       --c-moss-soft: #D2E3D6;
+  --c-graphite: #6A655F;   --c-graphite-soft: #E3DED6;
+
+  /* Shape */
+  --r-sm: 10px;
+  --r-md: 16px;
+  --r-lg: 24px;
+  --r-pill: 999px;
+
+  /* Spacing scale 4/8/12/16/20/24/32 */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+
+  /* Type */
+  --font-display: 'Fraunces Variable', Georgia, 'Times New Roman', serif;
+  --font-ui: 'Hanken Grotesk Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  /* Layout */
+  --content-max: 560px;
+  --gutter: 20px;
+  --tabbar-h: 58px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Height of the fixed bottom stack (InstallHint + tab bar). App.tsx measures and updates it;
+     use it for anything that must float above the tab bar. */
+  --bottom-stack-h: calc(var(--tabbar-h) + var(--safe-bottom));
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #15110E;
+    --surface: #1F1915;
+    --surface-2: #2A231E;
+    --surface-glass: rgba(31, 25, 21, 0.9);
+    --seg-thumb: #352C26; /* lighter than the --surface-2 track, so the thumb reads raised */
+    --ink: #F3ECE1;
+    --ink-2: #B8ADA2;
+    --ink-3: #7F756C;
+    --line: rgba(243, 236, 225, 0.10);
+    --line-strong: rgba(243, 236, 225, 0.50);
+    --ember: #E97A49;
+    --ember-soft: #3A251A;
+    --ember-ink: #F6C7AE;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    --scrim: rgba(0, 0, 0, 0.55);
+
+    --accent-text: #E97A49;
+    --accent-solid: #E97A49;
+    --on-accent: #15110E;
+    --danger: #F0917F;
+    --danger-soft: #3B221E;
+
+    --texture-opacity: 0.06;
+    --texture-blend: normal;
+
+    --c-terracotta: #E97A49; --c-terracotta-soft: #3A251A;
+    --c-ochre: #E0AC3F;      --c-ochre-soft: #3A2F18;
+    --c-sage: #93B383;       --c-sage-soft: #24301F;
+    --c-slate: #7FA2BE;      --c-slate-soft: #1E2A35;
+    --c-plum: #B07FA8;       --c-plum-soft: #32243A;
+    --c-rose: #E08AA0;       --c-rose-soft: #3A2430;
+    --c-moss: #6FA07E;       --c-moss-soft: #1F3027;
+    --c-graphite: #9B948C;   --c-graphite-soft: #2C2824;
+  }
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #15110E;
+  --surface: #1F1915;
+  --surface-2: #2A231E;
+  --surface-glass: rgba(31, 25, 21, 0.9);
+  --seg-thumb: #352C26;
+  --ink: #F3ECE1;
+  --ink-2: #B8ADA2;
+  --ink-3: #7F756C;
+  --line: rgba(243, 236, 225, 0.10);
+  --line-strong: rgba(243, 236, 225, 0.50);
+  --ember: #E97A49;
+  --ember-soft: #3A251A;
+  --ember-ink: #F6C7AE;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  --accent-text: #E97A49;
+  --accent-solid: #E97A49;
+  --on-accent: #15110E;
+  --danger: #F0917F;
+  --danger-soft: #3B221E;
+
+  --texture-opacity: 0.06;
+  --texture-blend: normal;
+
+  --c-terracotta: #E97A49; --c-terracotta-soft: #3A251A;
+  --c-ochre: #E0AC3F;      --c-ochre-soft: #3A2F18;
+  --c-sage: #93B383;       --c-sage-soft: #24301F;
+  --c-slate: #7FA2BE;      --c-slate-soft: #1E2A35;
+  --c-plum: #B07FA8;       --c-plum-soft: #32243A;
+  --c-rose: #E08AA0;       --c-rose-soft: #3A2430;
+  --c-moss: #6FA07E;       --c-moss-soft: #1F3027;
+  --c-graphite: #9B948C;   --c-graphite-soft: #2C2824;
+}

@@ -1,0 +1,55 @@
+.seg {
+  --count: 3;
+  --index: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--count), minmax(0, 1fr));
+  padding: 3px;
+  min-height: 44px;
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+  isolation: isolate;
+}
+
+.seg__thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / var(--count));
+  transform: translateX(calc(var(--index) * 100%));
+  background: var(--seg-thumb, var(--surface));
+  border-radius: var(--r-pill);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.08),
+    0 0 0 1px var(--line);
+  transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
+  z-index: 0;
+}
+
+.seg__option {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
+  transition: color 160ms ease;
+}
+
+/* The 38px option inside the 44px track gets a 44px hit area (3px padding on each side). */
+.seg__option::before {
+  content: '';
+  position: absolute;
+  inset: -3px 0;
+}
+
+.seg__option.is-selected {
+  color: var(--ink);
+}

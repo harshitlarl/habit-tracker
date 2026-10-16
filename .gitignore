@@ -6,3 +6,6 @@ test-results
 playwright-report
 e2e/screenshots
 *.local
+*.tsbuildinfo
+.vite
+coverage

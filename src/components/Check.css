@@ -1,0 +1,80 @@
+.check {
+  --check-size: 44px;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: max(var(--check-size), 44px);
+  height: max(var(--check-size), 44px);
+  border-radius: 50%;
+  color: var(--tone, var(--ember));
+  -webkit-tap-highlight-color: transparent;
+}
+
+.check__ring {
+  display: grid;
+  place-items: center;
+  width: var(--check-size);
+  height: var(--check-size);
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  background: transparent;
+  transition:
+    background-color 200ms ease,
+    border-color 200ms ease,
+    transform 160ms ease;
+}
+
+.check:active:not(:disabled) .check__ring {
+  transform: scale(0.92);
+}
+
+.check.is-checked .check__ring {
+  background: var(--tone, var(--ember));
+  border-color: var(--tone, var(--ember));
+}
+
+.check.is-pulse .check__ring {
+  animation: check-pop 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes check-pop {
+  0% {
+    transform: scale(0.8);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.check__mark {
+  width: 58%;
+  height: 58%;
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  transition:
+    stroke-dashoffset 260ms ease-out,
+    opacity 80ms linear;
+}
+
+.check.is-checked .check__mark {
+  stroke-dashoffset: 0;
+  opacity: 1;
+  transition-delay: 40ms, 0ms;
+}
+
+.check:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.check:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}

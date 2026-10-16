@@ -1,0 +1,93 @@
+.settings {
+  margin-top: var(--s-7);
+}
+
+.settings__title {
+  margin-bottom: var(--s-4);
+}
+
+.settings__group + .settings__group {
+  margin-top: var(--s-3);
+}
+
+.settings__label {
+  margin-bottom: var(--s-3);
+}
+
+.settings__body {
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.settings__group > .settings__body {
+  margin: calc(-1 * var(--s-1)) 0 var(--s-4);
+}
+
+.settings__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.settings__buttons > .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.settings__status {
+  margin-top: var(--s-3);
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+.settings__status:empty {
+  display: none;
+}
+
+.settings__status.is-error {
+  color: var(--danger);
+}
+
+.settings__danger {
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+
+.settings__danger > .confirm {
+  margin-top: 0;
+}
+
+.settings__install {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+}
+
+.settings__install-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--ember-soft);
+  color: var(--ember-ink);
+}
+
+.settings__install-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings__install-text > .settings__body {
+  margin-top: var(--s-1);
+}
+
+.settings__about {
+  margin-top: var(--s-6);
+  text-align: center;
+}

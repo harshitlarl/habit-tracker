@@ -1,0 +1,38 @@
+.confirm {
+  margin-top: var(--s-3);
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  outline: none;
+  animation: fade-in 160ms ease-out both;
+}
+
+.confirm__title {
+  font-size: 19px;
+  text-wrap: balance;
+}
+
+.confirm__body {
+  margin-top: 6px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.confirm__actions {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+}
+
+/* Actions share the row by content width; a long label ("Delete everything") grows or wraps,
+   never spills past the pill's padding. */
+.confirm__actions > .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+  padding-block: 10px;
+}

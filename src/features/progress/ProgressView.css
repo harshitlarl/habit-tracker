@@ -1,0 +1,36 @@
+.progress__subtitle {
+  margin-top: 8px;
+}
+
+/* Three big numerals between two hairlines. */
+.progress__overall {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-4);
+  padding: var(--s-5) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.progress__section {
+  margin-top: var(--s-6);
+}
+
+.progress__section--ruled {
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--line);
+}
+
+.progress__label {
+  margin-bottom: var(--s-4);
+}
+
+/* Trackers are separated by rules, not boxed. */
+.progress__trackers > * + * {
+  border-top: 1px solid var(--line);
+}
+
+.progress__note {
+  padding-bottom: var(--s-3);
+  text-wrap: pretty;
+}

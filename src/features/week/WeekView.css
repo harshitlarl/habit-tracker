@@ -1,0 +1,343 @@
+/* Week view — a ledger of the week: a name line per tracker, seven marks beneath it,
+   hairline rules between entries and totals under a double rule. */
+
+/* ---------- Header ---------- */
+.view-header.wk-header {
+  align-items: flex-end;
+}
+
+.wk-header__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Fixed height so the "This week" pill can appear without moving the title. */
+.wk-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: 28px;
+  margin-bottom: var(--s-1);
+}
+
+/* "28 Sep – 4 Oct" must sit beside two 44px buttons on a 375px screen. */
+.wk-header .wk-title {
+  font-size: clamp(28px, 8.2vw, 40px);
+}
+
+.wk-nav {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.wk-nav__btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  transition:
+    transform 120ms ease,
+    background-color 160ms ease;
+}
+
+.wk-nav__btn:active {
+  transform: scale(0.94);
+  background: var(--surface-2);
+}
+
+/* ---------- Grid ---------- */
+.wk-grid {
+  --wk-head-h: 52px;
+  --wk-cell-h: 46px;
+  position: relative;
+  isolation: isolate;
+}
+
+.wk-cols {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+/* Today's column: a continuous ember-soft band from under the header to the totals row. */
+.wk-band {
+  position: absolute;
+  top: var(--wk-head-h);
+  bottom: 0;
+  left: calc(var(--col, 0) * 100% / 7);
+  width: calc(100% / 7);
+  z-index: 0;
+  background: var(--ember-soft);
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+  pointer-events: none;
+}
+
+/* Day header: sticks below the status bar while the grid scrolls under it. */
+.wk-days {
+  position: sticky;
+  top: var(--safe-top);
+  z-index: 2;
+  height: var(--wk-head-h);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.wk-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 100%;
+}
+
+.wk-day.is-today {
+  background: var(--ember-soft);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+}
+
+.wk-day__name {
+  line-height: 1;
+}
+
+.wk-day__num {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 17px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  font-variation-settings: 'SOFT' 30;
+  color: var(--ink);
+}
+
+.wk-day.is-today .wk-day__name,
+.wk-day.is-today .wk-day__num {
+  color: var(--ember-ink);
+}
+
+.wk-day.is-today .wk-day__num {
+  font-weight: 600;
+}
+
+/* ---------- Rows ---------- */
+.wk-rows {
+  position: relative;
+  z-index: 1;
+}
+
+.wk-row {
+  padding: var(--s-3) 0 var(--s-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.wk-row:last-child {
+  border-bottom: 0;
+}
+
+.wk-row__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 0 var(--s-1);
+  margin-bottom: var(--s-1);
+}
+
+.wk-emoji {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--tone-soft);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.wk-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.wk-tag {
+  flex: none;
+}
+
+.wk-row__count {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* ---------- Cells ---------- */
+.wk-cell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: var(--wk-cell-h);
+  border-radius: var(--r-sm);
+  color: var(--tone, var(--ember));
+}
+
+.wk-cell:disabled {
+  cursor: default;
+}
+
+.wk-cell.is-future {
+  opacity: 0.35;
+}
+
+.wk-mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    opacity 180ms ease,
+    transform 160ms ease;
+}
+
+.wk-cell:active:not(:disabled) .wk-mark {
+  transform: scale(0.88);
+}
+
+.wk-cell--done .wk-mark,
+.wk-cell--bonus .wk-mark {
+  background: var(--tone, var(--ember));
+  border-color: var(--tone, var(--ember));
+}
+
+/* A completion on an unscheduled day: filled, but quieter than a scheduled one. */
+.wk-cell--bonus .wk-mark {
+  opacity: 0.55;
+}
+
+/* Unscheduled: a faint dash. */
+.wk-cell--off .wk-mark {
+  width: 10px;
+  height: 2px;
+  border: 0;
+  border-radius: 1px;
+  background: var(--ink-3);
+  opacity: 0.7;
+}
+
+.wk-cell--off .wk-mark__check {
+  display: none;
+}
+
+.wk-mark__check {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+  transition:
+    stroke-dashoffset 260ms ease-out,
+    opacity 80ms linear;
+}
+
+.wk-cell--done .wk-mark__check,
+.wk-cell--bonus .wk-mark__check {
+  stroke-dashoffset: 0;
+  opacity: 1;
+  transition-delay: 40ms, 0ms;
+}
+
+.wk-cell.is-pulse .wk-mark {
+  animation: wk-pop 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes wk-pop {
+  from {
+    transform: scale(0.72);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@media (hover: hover) {
+  .wk-nav__btn:hover {
+    background: var(--surface-2);
+  }
+
+  .wk-cell:not(:disabled):hover .wk-mark {
+    border-color: var(--tone, var(--ember));
+  }
+}
+
+/* ---------- Totals ---------- */
+.wk-foot {
+  position: relative;
+  z-index: 1;
+  margin-top: 2px;
+  padding: var(--s-2) 0 var(--s-1);
+  border-top: 3px double var(--line-strong);
+}
+
+.wk-foot__cell {
+  display: grid;
+  place-items: center;
+  min-height: 28px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+
+/* A perfect day. ember-ink reads >= 4.5:1 both on paper and on today's ember band;
+   --accent-text only manages 4.1:1 on the band in light. */
+.wk-foot__cell.is-perfect {
+  color: var(--ember-ink);
+}
+
+/* ---------- Summary ---------- */
+.wk-summary {
+  margin-top: var(--s-6);
+}
+
+.wk-summary .wk-summary__text {
+  font-size: 20px;
+}
+
+.wk-summary__text::before {
+  content: '';
+  display: block;
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--ember);
+  margin-bottom: var(--s-3);
+}
+
+.wk-summary__note {
+  margin-top: var(--s-2);
+}
+
+.wk-none {
+  padding: var(--s-6) 0;
+}

@@ -1,0 +1,29 @@
+.empty {
+  max-width: 420px;
+  padding: var(--s-7) 0 var(--s-6);
+}
+
+.empty__ornament {
+  display: block;
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--ember);
+  margin-bottom: var(--s-4);
+}
+
+.empty__title {
+  text-wrap: balance;
+}
+
+.empty__body {
+  margin-top: 10px;
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.empty__action {
+  margin-top: var(--s-5);
+}
