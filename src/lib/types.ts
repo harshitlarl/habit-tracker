@@ -66,6 +66,31 @@ export interface Settings {
   installHintDismissed: boolean;
 }
 
+/* ---------- One-time tasks (SPEC §14) ---------- */
+
+export const TASK_TITLE_MAX = 60;
+export const TASK_NOTE_MAX = 80;
+/** 'HH:mm', 24-hour. */
+export const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+export const isTimeString = (v: unknown): v is string => typeof v === 'string' && TIME_RE.test(v);
+
+/**
+ * A one-time, dated item ("Tuesday — renew the gym membership", "Thursday 15:00 — mentor meeting").
+ * Tasks sit next to trackers on Today, appear under their day in Week and carry over while undone.
+ * They never count towards streaks, the progress ring or the motivation copy.
+ */
+export interface Task {
+  id: string;
+  title: string; // trimmed, 1–60 chars
+  note?: string; // trimmed, ≤ 80 chars
+  date: DateKey; // planned LOCAL calendar date
+  time?: string; // 'HH:mm', 24-hour
+  done: boolean;
+  doneAt?: DateKey; // LOCAL date it was checked off (differs from `date` when done late); only while done
+  createdAt: DateKey;
+}
+
 export interface AppData {
   version: 1;
   habits: Habit[];
@@ -74,4 +99,8 @@ export interface AppData {
   exportedAt?: string;
   /** Tombstones of deleted trackers (since cloud sync). Absent in older backups. */
   deletedIds?: string[];
+  /** One-time tasks (since phase 3). Absent in older backups. */
+  tasks?: Task[];
+  /** Tombstones of deleted tasks. Absent in older backups. */
+  deletedTaskIds?: string[];
 }

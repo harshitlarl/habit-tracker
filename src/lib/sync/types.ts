@@ -1,4 +1,4 @@
-import type { Completions, DateKey, Habit } from '../types';
+import type { Completions, DateKey, Habit, Task } from '../types';
 
 /**
  * Phase 2 — cloud sync contract (SPEC §13). Every module under src/lib/sync/ builds on these types.
@@ -35,6 +35,31 @@ export interface MergeResult {
   merged: LocalData;
   /** What the cloud is missing. Empty when the cloud already has everything. */
   toPush: PushOp[];
+}
+
+/* ---------- One-time tasks (SPEC §14.8): a second collection, users/{uid}/tasks, reconciled by tasksMerge.ts ---------- */
+
+/** The synced slice of one-time tasks. Kept apart from LocalData so the habit logic above stays untouched. */
+export interface LocalTasks {
+  tasks: Task[];
+  /** Tombstones: ids of tasks deleted on this device (or learned from the cloud). Sync never hard-deletes. */
+  deletedTaskIds: string[];
+}
+
+/** One Firestore document at users/{uid}/tasks/{taskId}, after parsing (see tasksMerge.ts parseRemoteTask). */
+export interface RemoteTask extends Task {
+  /** Tombstone flag. A deleted doc may keep its fields; a bare tombstone carries placeholders. */
+  deleted: boolean;
+  /** Firestore serverTimestamp(); null while a local write awaits the server. Opaque to tasksMerge.ts. */
+  updatedAt?: unknown;
+}
+
+/** A single write the engine must perform against users/{uid}/tasks. */
+export type TaskPushOp = { type: 'setTask'; task: Task } | { type: 'tombstoneTask'; taskId: string };
+
+export interface TasksMergeResult {
+  merged: LocalTasks;
+  toPush: TaskPushOp[];
 }
 
 export type SyncStatus =

@@ -5,8 +5,11 @@ import {
   HABIT_EMOJI_MAX,
   HABIT_NAME_MAX,
   HABIT_NOTE_MAX,
+  TASK_NOTE_MAX,
+  TASK_TITLE_MAX,
   isHabitColor,
   isIdLike,
+  isTimeString,
   isValidId,
   isWeekday,
   type AppData,
@@ -15,6 +18,7 @@ import {
   type Habit,
   type HabitColor,
   type Settings,
+  type Task,
   type Theme,
   type Weekday,
 } from './types';
@@ -23,7 +27,8 @@ import { newId } from './ids';
 import { isDone } from './selectors';
 import { clearAllBaselines } from './sync/baseline';
 import { sameData } from './sync/merge';
-import type { LocalData } from './sync/types';
+import { sameTasks } from './sync/tasksMerge';
+import type { LocalData, LocalTasks } from './sync/types';
 
 export const STORAGE_KEY = 'momentum-v1';
 
@@ -34,7 +39,7 @@ export const DEFAULT_SETTINGS: Settings = { theme: 'system', installHintDismisse
  * could never have saved (and could not re-save without the owner retyping the field). They live in
  * types.ts, shared with the cloud parser (sync/merge.ts), and are re-exported here for existing imports.
  */
-export { HABIT_EMOJI_MAX, HABIT_NAME_MAX, HABIT_NOTE_MAX } from './types';
+export { HABIT_EMOJI_MAX, HABIT_NAME_MAX, HABIT_NOTE_MAX, TASK_NOTE_MAX, TASK_TITLE_MAX } from './types';
 
 export interface HabitInput {
   name: string;
@@ -46,6 +51,18 @@ export interface HabitInput {
 }
 
 export type HabitPatch = Partial<Omit<Habit, 'id' | 'createdAt' | 'order'>>;
+
+/** A new one-time task (SPEC §14.3). `time` must be 'HH:mm' or it is dropped; blank `note` is dropped. */
+export interface TaskInput {
+  title: string;
+  date: DateKey;
+  time?: string;
+  note?: string;
+  createdAt?: DateKey;
+}
+
+/** `note` and `time` are clearable (undefined or ''); `title` never becomes blank; `date` must be a real date. */
+export type TaskPatch = Partial<Pick<Task, 'title' | 'note' | 'date' | 'time'>>;
 
 export type ImportResult = { ok: true } | { ok: false; error: string };
 
@@ -60,6 +77,10 @@ export interface StoreState {
    * Kept so cloud sync never resurrects a deleted tracker. Cleared only by resetAll.
    */
   deletedIds: string[];
+  /** One-time tasks (SPEC §14): dated items next to the trackers; never part of streaks or the ring. */
+  tasks: Task[];
+  /** Tombstones of deleted tasks, kept for the same reason as `deletedIds`. Cleared only by resetAll. */
+  deletedTaskIds: string[];
 
   addHabit: (input: HabitInput) => Habit;
   updateHabit: (id: string, patch: HabitPatch) => void;
@@ -67,6 +88,14 @@ export interface StoreState {
   unarchiveHabit: (id: string) => void;
   deleteHabit: (id: string) => void;
   reorderHabits: (orderedIds: string[]) => void;
+
+  addTask: (input: TaskInput) => Task;
+  updateTask: (id: string, patch: TaskPatch) => void;
+  /** `today` is the LOCAL date recorded as `doneAt` when checking off (defaults to todayKey()). */
+  setTaskDone: (id: string, done: boolean, today?: DateKey) => void;
+  toggleTask: (id: string, today?: DateKey) => void;
+  /** Removes the task and leaves a tombstone in `deletedTaskIds`. Unknown ids are ignored. */
+  deleteTask: (id: string) => void;
 
   toggleCompletion: (habitId: string, dateKey: DateKey) => void;
   setCompletion: (habitId: string, dateKey: DateKey, done: boolean) => void;
@@ -76,7 +105,7 @@ export interface StoreState {
 
   exportData: () => AppData;
   importData: (raw: unknown) => ImportResult;
-  /** Local only: wipes trackers, completions, tombstones and settings on this device. */
+  /** Local only: wipes trackers, completions, tasks, tombstones and settings on this device. */
   resetAll: () => void;
 
   /**
@@ -84,12 +113,16 @@ export interface StoreState {
    * reconciled cloud state. No-op (no set, no persist write) when nothing changed.
    */
   applyRemote: (data: LocalData) => void;
+  /** Sync engine only (SPEC §14.8): the same for tasks and their tombstones. No-op when nothing changed. */
+  applyRemoteTasks: (data: LocalTasks) => void;
 }
 
-type PersistedState = Pick<StoreState, 'habits' | 'completions' | 'settings' | 'deletedIds'>;
-/** What a version-1 (pre-sync) persisted blob looked like. */
-type PersistedStateV1 = Pick<StoreState, 'habits' | 'completions' | 'settings'>;
-export const PERSIST_VERSION = 2;
+type PersistedState = Pick<
+  StoreState,
+  'habits' | 'completions' | 'settings' | 'deletedIds' | 'tasks' | 'deletedTaskIds'
+>;
+/** v1: pre-sync (no tombstones); v2: tombstones; v3: one-time tasks and their tombstones. */
+export const PERSIST_VERSION = 3;
 
 /* ---------- helpers ---------- */
 
@@ -211,6 +244,46 @@ export function validateAppData(raw: unknown): ValidationResult {
     return fail('"settings.installHintDismissed" must be true or false.');
   }
 
+  // One-time tasks (SPEC §14.3): optional in the file (older backups), strict when present.
+  const taskIds = new Set<string>();
+  const tasks: Task[] = [];
+  if (raw.tasks !== undefined) {
+    if (!Array.isArray(raw.tasks)) return fail('"tasks" must be an array.');
+    for (const [index, item] of raw.tasks.entries()) {
+      const where = `Task #${index + 1}`;
+      if (!isRecord(item)) return fail(`${where} is not an object.`);
+      const { id, title, note, date, time, done, doneAt, createdAt } = item;
+      if (!isValidId(id)) return fail(`${where} has an invalid id.`);
+      if (taskIds.has(id)) return fail(`${where} duplicates the id "${id}".`);
+      if (typeof title !== 'string' || title.trim() === '') return fail(`${where} needs a title.`);
+      const trimmedTitle = title.trim();
+      if (trimmedTitle.length > TASK_TITLE_MAX) {
+        return fail(`${where} has a title longer than ${TASK_TITLE_MAX} characters.`);
+      }
+      if (note !== undefined && typeof note !== 'string') return fail(`${where} has an invalid note.`);
+      const trimmedNote = note?.trim();
+      if (trimmedNote !== undefined && trimmedNote.length > TASK_NOTE_MAX) {
+        return fail(`${where} has a note longer than ${TASK_NOTE_MAX} characters.`);
+      }
+      if (!isDateKey(date)) return fail(`${where} has an invalid date.`);
+      if (time !== undefined && !isTimeString(time)) return fail(`${where} has an invalid time (expected HH:mm).`);
+      if (typeof done !== 'boolean') return fail(`${where} has an invalid done flag.`);
+      if (doneAt !== undefined && !isDateKey(doneAt)) return fail(`${where} has an invalid doneAt date.`);
+      if (!isDateKey(createdAt)) return fail(`${where} has an invalid createdAt date.`);
+
+      taskIds.add(id);
+      const task: Task = { id, title: trimmedTitle, date, done, createdAt };
+      if (trimmedNote) task.note = trimmedNote;
+      if (isTimeString(time)) task.time = time;
+      if (done && isDateKey(doneAt)) task.doneAt = doneAt; // doneAt only means something while done
+      tasks.push(task);
+    }
+  }
+  if (raw.deletedTaskIds !== undefined) {
+    if (!Array.isArray(raw.deletedTaskIds)) return fail('"deletedTaskIds" must be an array.');
+    if (!raw.deletedTaskIds.every(isValidId)) return fail('"deletedTaskIds" must contain only task ids.');
+  }
+
   const data: AppData = {
     version: 1,
     habits,
@@ -221,6 +294,10 @@ export function validateAppData(raw: unknown): ValidationResult {
   if (Array.isArray(raw.deletedIds)) {
     // Validated above; a tracker present in the file is, by definition, not deleted.
     data.deletedIds = uniqueIds(raw.deletedIds as string[]).filter((id) => !ids.has(id));
+  }
+  if (Array.isArray(raw.tasks)) data.tasks = tasks;
+  if (Array.isArray(raw.deletedTaskIds)) {
+    data.deletedTaskIds = uniqueIds(raw.deletedTaskIds as string[]).filter((id) => !taskIds.has(id));
   }
   return { ok: true, data };
 }
@@ -352,7 +429,31 @@ function repairHabit(raw: unknown): Habit | null {
 }
 
 /**
- * Re-validate a persisted blob field by field: damaged trackers are repaired, duplicate ids keep
+ * A persisted task, repaired field by field like repairHabit: only a record without an id is dropped, a
+ * blank title becomes 'Untitled', a damaged date falls back to createdAt (then today), a damaged optional
+ * field is dropped, and `doneAt` is kept only while done.
+ */
+function repairTask(raw: unknown): Task | null {
+  if (!isRecord(raw) || !isIdLike(raw.id)) return null;
+  const title = typeof raw.title === 'string' ? raw.title.trim().slice(0, TASK_TITLE_MAX) : '';
+  const createdAt = isDateKey(raw.createdAt) ? raw.createdAt : todayKey();
+  const done = raw.done === true;
+  const task: Task = {
+    id: isValidId(raw.id) ? raw.id : newId(),
+    title: title || 'Untitled',
+    date: isDateKey(raw.date) ? raw.date : createdAt,
+    done,
+    createdAt,
+  };
+  const note = typeof raw.note === 'string' ? raw.note.trim().slice(0, TASK_NOTE_MAX) : '';
+  if (note) task.note = note;
+  if (isTimeString(raw.time)) task.time = raw.time;
+  if (done && isDateKey(raw.doneAt)) task.doneAt = raw.doneAt;
+  return task;
+}
+
+/**
+ * Re-validate a persisted blob field by field: damaged trackers and tasks are repaired, duplicate ids keep
  * their first record, orphan or malformed completions are dropped, settings fall back to `current`,
  * tombstones are deduplicated and never name a tracker that is present. Hydration happens once at
  * launch, when `current` is the initial state, so the blob (not memory) is the source of truth.
@@ -396,7 +497,19 @@ function repairPersisted(persisted: unknown, current: PersistedState): Persisted
     ? uniqueIds(p.deletedIds.filter(isValidId)).filter((id) => !ids.has(id))
     : [];
 
-  return { habits, completions, settings, deletedIds };
+  const tasks: Task[] = [];
+  const taskIds = new Set<string>();
+  for (const item of Array.isArray(p.tasks) ? p.tasks : []) {
+    const task = repairTask(item);
+    if (!task || taskIds.has(task.id)) continue;
+    taskIds.add(task.id);
+    tasks.push(task);
+  }
+  const deletedTaskIds = Array.isArray(p.deletedTaskIds)
+    ? uniqueIds(p.deletedTaskIds.filter(isValidId)).filter((id) => !taskIds.has(id))
+    : [];
+
+  return { habits, completions, settings, deletedIds, tasks, deletedTaskIds };
 }
 
 /* ---------- store ---------- */
@@ -408,6 +521,8 @@ const useStore = create<StoreState>()(
       completions: {},
       settings: { ...DEFAULT_SETTINGS },
       deletedIds: [],
+      tasks: [],
+      deletedTaskIds: [],
 
       addHabit: (input) => {
         const { habits } = get();
@@ -508,6 +623,82 @@ const useStore = create<StoreState>()(
           return { habits };
         }),
 
+      addTask: (input) => {
+        const title = input.title.trim().slice(0, TASK_TITLE_MAX);
+        const createdAt = isDateKey(input.createdAt) ? input.createdAt : todayKey();
+        const task: Task = {
+          id: newId(),
+          title: title || 'Untitled',
+          date: isDateKey(input.date) ? input.date : createdAt,
+          done: false,
+          createdAt,
+        };
+        const note = input.note?.trim().slice(0, TASK_NOTE_MAX);
+        if (note) task.note = note;
+        if (isTimeString(input.time)) task.time = input.time;
+        set((s) => ({ tasks: [...s.tasks, task] }));
+        return task;
+      },
+
+      // Field by field, like updateHabit. `note` / `time` are clearable; a blank title is ignored.
+      updateTask: (id, patch) =>
+        set((s) => {
+          if (!s.tasks.some((t) => t.id === id)) return s;
+          return {
+            tasks: s.tasks.map((t) => {
+              if (t.id !== id) return t;
+              const next: Task = { ...t };
+              if (typeof patch.title === 'string') {
+                const title = patch.title.trim().slice(0, TASK_TITLE_MAX);
+                if (title) next.title = title;
+              }
+              if ('note' in patch) {
+                const note = patch.note?.trim().slice(0, TASK_NOTE_MAX);
+                if (note) next.note = note;
+                else delete next.note;
+              }
+              if (isDateKey(patch.date)) next.date = patch.date;
+              if ('time' in patch) {
+                if (isTimeString(patch.time)) next.time = patch.time;
+                else delete next.time;
+              }
+              return next;
+            }),
+          };
+        }),
+
+      // `doneAt` is the LOCAL date of the check-off, which differs from `date` for a task done late.
+      setTaskDone: (id, done, today = todayKey()) =>
+        set((s) => {
+          const task = s.tasks.find((t) => t.id === id);
+          if (!task || task.done === done) return s;
+          const doneAt = isDateKey(today) ? today : todayKey();
+          return {
+            tasks: s.tasks.map((t) => {
+              if (t.id !== id) return t;
+              const next: Task = { ...t, done };
+              if (done) next.doneAt = doneAt;
+              else delete next.doneAt;
+              return next;
+            }),
+          };
+        }),
+
+      toggleTask: (id, today) => {
+        const task = get().tasks.find((t) => t.id === id);
+        if (task) get().setTaskDone(id, !task.done, today);
+      },
+
+      // Leaves a tombstone so a synced copy of the task cannot come back (SPEC §14.3).
+      deleteTask: (id) =>
+        set((s) => {
+          if (!s.tasks.some((t) => t.id === id)) return s;
+          return {
+            tasks: s.tasks.filter((t) => t.id !== id),
+            deletedTaskIds: uniqueIds([...s.deletedTaskIds, id]),
+          };
+        }),
+
       setCompletion: (habitId, dateKey, done) =>
         set((s) => {
           // Unknown ids and malformed keys are ignored so the data always passes the importer.
@@ -537,8 +728,17 @@ const useStore = create<StoreState>()(
       dismissInstallHint: () => set((s) => ({ settings: { ...s.settings, installHintDismissed: true } })),
 
       exportData: () => {
-        const { habits, completions, settings, deletedIds } = get();
-        return { version: 1, habits, completions, settings, deletedIds, exportedAt: new Date().toISOString() };
+        const { habits, completions, settings, deletedIds, tasks, deletedTaskIds } = get();
+        return {
+          version: 1,
+          habits,
+          completions,
+          settings,
+          deletedIds,
+          tasks,
+          deletedTaskIds,
+          exportedAt: new Date().toISOString(),
+        };
       },
 
       importData: (raw) => {
@@ -550,6 +750,8 @@ const useStore = create<StoreState>()(
           completions: get().completions,
           settings: get().settings,
           deletedIds: get().deletedIds,
+          tasks: get().tasks,
+          deletedTaskIds: get().deletedTaskIds,
         };
         // Tombstones are the union of what this device knows and what the backup carries. A tracker
         // in the backup whose id is tombstoned here was deleted after that backup was taken: it is
@@ -569,7 +771,17 @@ const useStore = create<StoreState>()(
         const kept = new Set(habits.map((h) => h.id));
         const replaced = previous.habits.map((h) => h.id).filter((id) => !kept.has(id));
         const deletedIds = uniqueIds([...previous.deletedIds, ...(result.data.deletedIds ?? []), ...replaced]);
-        const next: PersistedState = { habits, completions, settings, deletedIds };
+        // Tasks follow the same two rules. A backup without tasks (pre-phase-3) replaces them with none.
+        const tombstonedTasks = new Set(previous.deletedTaskIds);
+        const tasks = (result.data.tasks ?? []).map((t) => (tombstonedTasks.has(t.id) ? { ...t, id: newId() } : t));
+        const keptTasks = new Set(tasks.map((t) => t.id));
+        const replacedTasks = previous.tasks.map((t) => t.id).filter((id) => !keptTasks.has(id));
+        const deletedTaskIds = uniqueIds([
+          ...previous.deletedTaskIds,
+          ...(result.data.deletedTaskIds ?? []),
+          ...replacedTasks,
+        ]);
+        const next: PersistedState = { habits, completions, settings, deletedIds, tasks, deletedTaskIds };
         // The device decides before anything changes: the exact record persist is about to write is
         // written first. Should the browser refuse it (quota, storage disabled), the store is never
         // set, so no subscriber — the sync engine included — ever sees a replacement that did not
@@ -583,7 +795,14 @@ const useStore = create<StoreState>()(
       resetAll: () => {
         // "Reset this device" also forgets what the sync engine knew about every account's cloud copy.
         clearAllBaselines();
-        set({ habits: [], completions: {}, settings: { ...DEFAULT_SETTINGS }, deletedIds: [] });
+        set({
+          habits: [],
+          completions: {},
+          settings: { ...DEFAULT_SETTINGS },
+          deletedIds: [],
+          tasks: [],
+          deletedTaskIds: [],
+        });
       },
 
       // Compared BEFORE set(): persist writes storage on every set() call, even one whose updater
@@ -592,6 +811,12 @@ const useStore = create<StoreState>()(
         const { habits, completions, deletedIds } = get();
         if (sameData({ habits, completions, deletedIds }, data)) return;
         set({ habits: data.habits, completions: data.completions, deletedIds: uniqueIds(data.deletedIds) });
+      },
+
+      applyRemoteTasks: (data) => {
+        const { tasks, deletedTaskIds } = get();
+        if (sameTasks({ tasks, deletedTaskIds }, data)) return;
+        set({ tasks: data.tasks, deletedTaskIds: uniqueIds(data.deletedTaskIds) });
       },
     }),
     {
@@ -603,13 +828,20 @@ const useStore = create<StoreState>()(
         completions: s.completions,
         settings: s.settings,
         deletedIds: s.deletedIds,
+        tasks: s.tasks,
+        deletedTaskIds: s.deletedTaskIds,
       }),
-      // v1 → v2: tombstones did not exist yet. Anything older or partial gets an empty list; `merge`
-      // below re-validates every field, so a damaged blob can never crash hydration.
+      // v1 → v2 added tombstones; v2 → v3 added one-time tasks and their tombstones. Anything older or
+      // partial gets empty lists; `merge` below re-validates every field, so a damaged blob can never
+      // crash hydration.
       migrate: (persisted, version) => {
-        const p = (persisted ?? {}) as Partial<PersistedStateV1> & { deletedIds?: unknown };
-        const deletedIds = version >= 2 && Array.isArray(p.deletedIds) ? p.deletedIds : [];
-        return { ...p, deletedIds } as PersistedState;
+        const p: Record<string, unknown> = isRecord(persisted) ? persisted : {};
+        return {
+          ...p,
+          deletedIds: version >= 2 && Array.isArray(p.deletedIds) ? p.deletedIds : [],
+          tasks: version >= 3 && Array.isArray(p.tasks) ? p.tasks : [],
+          deletedTaskIds: version >= 3 && Array.isArray(p.deletedTaskIds) ? p.deletedTaskIds : [],
+        } as PersistedState;
       },
       merge: (persisted, current) => ({ ...current, ...repairPersisted(persisted, current) }),
     },

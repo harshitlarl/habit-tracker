@@ -101,7 +101,7 @@ describe('persistence wiring', () => {
   it('uses the momentum-v1 key at version 2 and has hydrated', () => {
     expect(STORAGE_KEY).toBe('momentum-v1');
     expect(useStore.persist.getOptions().name).toBe('momentum-v1');
-    expect(useStore.persist.getOptions().version).toBe(2);
+    expect(useStore.persist.getOptions().version).toBe(3);
     expect(useStore.persist.hasHydrated()).toBe(true);
   });
 
@@ -136,8 +136,15 @@ describe('persistence wiring', () => {
       // Subsequent writes land in storage, partialized to data only.
       store().setTheme('light');
       const written = JSON.parse(mem.get(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
-      expect(written.version).toBe(2);
-      expect(Object.keys(written.state).sort()).toEqual(['completions', 'deletedIds', 'habits', 'settings']);
+      expect(written.version).toBe(3);
+      expect(Object.keys(written.state).sort()).toEqual([
+        'completions',
+        'deletedIds',
+        'deletedTaskIds',
+        'habits',
+        'settings',
+        'tasks',
+      ]);
       expect(written.state.settings.theme).toBe('light');
     } finally {
       useStore.persist.setOptions({ storage: original });
@@ -155,7 +162,7 @@ describe('persistence wiring', () => {
       await useStore.persist.rehydrate();
       expect(store().settings).toEqual({ theme: 'light', installHintDismissed: true });
       const written = JSON.parse(mem.get(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
-      expect(written.version).toBe(2);
+      expect(written.version).toBe(3);
     } finally {
       useStore.persist.setOptions({ storage: original });
     }
@@ -560,7 +567,16 @@ describe('export / import', () => {
     const h = add('A');
     store().setCompletion(h.id, '2026-10-05', true);
     const data = store().exportData();
-    expect(Object.keys(data).sort()).toEqual(['completions', 'deletedIds', 'exportedAt', 'habits', 'settings', 'version']);
+    expect(Object.keys(data).sort()).toEqual([
+      'completions',
+      'deletedIds',
+      'deletedTaskIds',
+      'exportedAt',
+      'habits',
+      'settings',
+      'tasks',
+      'version',
+    ]);
     expect(data.version).toBe(1);
     expect(data.habits).toEqual([h]);
     expect(data.completions).toEqual({ [h.id]: { '2026-10-05': true } });
@@ -925,7 +941,7 @@ const storedHabit = (over: Partial<Habit> = {}): Habit => ({
 });
 
 describe('persist version 2: migration and repair', () => {
-  it('migrates a v1 record: deletedIds starts empty and the record is rewritten at version 2', async () => {
+  it('migrates a v1 record: deletedIds starts empty and the record is rewritten at version 3', async () => {
     const written = await rehydrateFrom({
       state: {
         habits: [storedHabit()],
@@ -938,7 +954,7 @@ describe('persist version 2: migration and repair', () => {
     expect(store().completions).toEqual({ a: { '2026-10-06': true } });
     expect(store().settings).toEqual({ theme: 'dark', installHintDismissed: true });
     expect(store().deletedIds).toEqual([]);
-    expect(written?.version).toBe(2);
+    expect(written?.version).toBe(3);
     expect(written?.state.deletedIds).toEqual([]);
     expect(written?.state.habits).toEqual([storedHabit()]);
   });
@@ -983,7 +999,7 @@ describe('persist version 2: migration and repair', () => {
       const written = await rehydrateFrom({ state, version: 1 });
       expect(store().habits).toEqual([]);
       expect(store().deletedIds).toEqual([]);
-      expect(written?.version).toBe(2);
+      expect(written?.version).toBe(3);
     },
   );
 
@@ -1298,7 +1314,7 @@ describe('applyRemote', () => {
     expect(store().deletedIds).toEqual(['x', 'y']);
     expect(store().settings).toEqual({ theme: 'dark', installHintDismissed: false });
     const written = JSON.parse(mem.get(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
-    expect(written.version).toBe(2);
+    expect(written.version).toBe(3);
     expect(written.state.habits.map((h) => h.id)).toEqual(['a', 'b']);
     expect(written.state.completions).toEqual({ a: { '2026-10-06': true } });
     expect(written.state.deletedIds).toEqual(['x', 'y']);
@@ -1410,7 +1426,7 @@ describe('a failed import changes nothing anyone can observe', () => {
     expect(store().deletedIds).toEqual([mine.id]);
     const written = JSON.parse(local.getItem(STORAGE_KEY) ?? 'null') as StorageValue<Persisted>;
     expect(written.state.habits.map((h) => h.id)).toEqual(['a', 'b']);
-    expect(written.version).toBe(2);
+    expect(written.version).toBe(3);
   });
 });
 

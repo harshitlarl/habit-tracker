@@ -412,3 +412,136 @@ deleted: boolean; updatedAt?: unknown }`, `PushOp` (`setHabit` | `addCompletion`
 - **sync-ui**: `src/features/manage/**`.
 - **hosting**: `firebase.json`, `.firebaserc`, `firestore.rules`, `firestore.indexes.json`, `vercel.json`, `netlify.toml`,
   `package.json` (scripts only), `README.md` ("Hosting & sync" section), `.gitignore`.
+
+## 14. Phase 3 — One-time tasks
+
+### 14.1 What and why
+Trackers are recurring. A **task** is a one-time, dated item: "Tuesday — renew the gym membership", "Thursday 3:00 pm — meeting
+with mentor". Tasks live next to trackers on Today, appear under their day in Week, carry over while undone, and sync like
+everything else. They never touch the progress ring, streaks, confetti or motivation copy (those stay about habits).
+Vocabulary in the UI: "task" / "tasks" (never "to-do", never "plan"). The FAB keeps creating trackers.
+
+### 14.2 Data model — `src/lib/types.ts` (IMPLEMENTED)
+```ts
+export const TASK_TITLE_MAX = 60;
+export const TASK_NOTE_MAX = 80;
+export const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;   // 'HH:mm', 24-hour
+export const isTimeString: (v: unknown) => v is string;
+export interface Task {
+  id: string;
+  title: string;      // trimmed, 1–60 chars
+  note?: string;      // trimmed, ≤ 80 chars
+  date: DateKey;      // planned LOCAL calendar date
+  time?: string;      // 'HH:mm' 24-hour, optional
+  done: boolean;
+  doneAt?: DateKey;   // LOCAL date it was checked off (differs from `date` when done late); only while done
+  createdAt: DateKey;
+}
+```
+`AppData` gains optional `tasks?: Task[]` and `deletedTaskIds?: string[]` (version stays 1: old backups import, new backups
+import on old builds, which ignore the two keys). `src/lib/tasks.ts` re-exports the constants and `isTimeString`.
+
+### 14.3 Store — `src/lib/store.ts` (IMPLEMENTED; persist version 3)
+- State: `tasks: Task[]`, `deletedTaskIds: string[]` (tombstones, same role as `deletedIds`).
+- `addTask(input: TaskInput): Task` — `TaskInput = { title; date; time?; note?; createdAt? }`; title/note trimmed and capped,
+  blank title → 'Untitled', invalid `time` dropped, invalid `date` falls back to `createdAt` (default today).
+- `updateTask(id, patch: TaskPatch)` — `TaskPatch = Partial<Pick<Task, 'title' | 'note' | 'date' | 'time'>>`, applied field by
+  field; `note`/`time` clearable with `undefined` or `''`; a blank title or invalid date is ignored; unknown id → no change.
+- `setTaskDone(id, done, today = todayKey())` — sets `doneAt = today` when done, deletes it when undone; no-op when unchanged.
+  `toggleTask(id, today?)`. `deleteTask(id)` removes and tombstones in `deletedTaskIds` (unknown ids ignored).
+- `exportData` includes `tasks` and `deletedTaskIds`. `validateAppData`/`importData`: tasks are optional in the file and strict
+  when present (valid unique ids, title 1–60, note ≤ 80, real `date`, `time` matching TIME_RE, boolean `done`, `doneAt` kept only
+  while done, real `createdAt`); import REPLACES tasks (a backup without tasks leaves none), tombstones the replaced ones, re-keys
+  a backup task whose id is tombstoned here (same rule as trackers) and unions tombstones.
+- `resetAll` clears both. `applyRemoteTasks(data: LocalTasks)` replaces tasks + tombstones wholesale (no-op via `sameTasks`).
+- Persist `migrate` v2→v3 adds `tasks: []`, `deletedTaskIds: []`; hydration repair (`repairTask`) fixes damaged records field by
+  field (blank title → 'Untitled', bad date → createdAt → today, damaged optional fields dropped).
+- Tests so far: `src/lib/__tests__/store-tasks.test.ts` (smoke); tasks-core extends them.
+
+### 14.4 Pure helpers — `src/lib/tasks.ts` (signatures fixed; `compareTasks`/`sortTasks` IMPLEMENTED, the rest are stubs)
+- `compareTasks(a, b)`: by `date`, then timed before untimed, then `time`, then `createdAt`, then `id`. `sortTasks(list)` (copy).
+- `tasksOn(tasks, dateKey)`: every task (any state) with `date === dateKey`, sorted.
+- `carriedOver(tasks, today)`: `!done && date < today`, sorted (oldest first).
+- `tasksForToday(tasks, today) → { carried, scheduled, openCount }` — `openCount` counts undone items in both lists.
+- `tasksInWeek(tasks, mondayKey) → Map<DateKey, Task[]>`: only days that have tasks, Monday→Sunday order, each list sorted.
+- `taskStatus(task, today) → 'done' | 'open' | 'overdue' | 'upcoming'` (`open` = today and undone).
+- `nextWeekdayKey(today, weekday)`: the next occurrence strictly after today (1–7 days ahead).
+- `quickDates(today)`: `[{ key: today, label: 'Today' }, { key: tomorrow, label: 'Tomorrow' }, …five more days labelled like 'Tue 21']`.
+- `relativeDayLabel(dateKey, today)`: 'Today' / 'Tomorrow' / 'Yesterday' / weekday name when within 6 days either way / 'Tue 21 Oct'.
+- `formatTime(time)`: device-locale clock via `Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })` applied to a
+  LOCAL Date built from the 'HH:mm' ('15:00' → '3:00 pm' or '15:00' depending on the device); invalid input is returned as is.
+- Fully unit-tested in `src/lib/__tests__/tasks.test.ts` (tests run with TZ=America/New_York; cover DST and month boundaries).
+
+### 14.5 Today — `src/features/today/` (TaskSection.tsx, TaskRow.tsx + CSS; TodayView renders the section)
+- Position: after "Due today", before "Not scheduled today". Also rendered when there are no trackers at all (below the empty state),
+  so a first task can be planned before the first tracker.
+- Header row: small-caps "Tasks"; right side: status small-caps ("2 left" / "All done"; nothing when there are no tasks) and a
+  44px icon button "Add task" (`plus` icon, 20px) that opens `TaskEditor` with `defaultDate = today`.
+- List: carried-over tasks first (oldest first), then today's (sorted). Row = square `Check` (`shape="square"`, `tone="ember"`,
+  size 36, label "Mark <title> done"), then a text button filling the row (opens the editor for that task): title (15px; done →
+  `--ink-3` with a soft strike), meta line (12px, `--ink-2`): `formatTime(time)` when timed, `· note` when present, and for
+  carried-over items a small-caps "From Tue 14 Oct" (`relativeDayLabel`) in `--accent-text`. Done tasks sink to the bottom of
+  their group. Row rise-in uses the same `--i` stagger as HabitRow.
+- Empty: one quiet line "Nothing planned today." (`--ink-2`, italic serif); the header "+" stays visible.
+- `Check` gains an additive `shape?: 'round' | 'square'` prop (default round) and `tone: HabitColor | 'ember'`; `.tone-ember`
+  joins the `.tone-*` rules in base.css (`--tone: var(--ember); --tone-soft: var(--ember-soft)`) and `toneClass` widens to match.
+- Settings: the "Reset this device" copy and the import preview (`describeBackup`) mention tasks.
+
+### 14.6 Week — `src/features/week/` (WeekTasks.tsx + CSS; WeekView renders it under the summary, and below the EmptyState when there are no trackers)
+- Section "Tasks this week" with a 44px "Add task" icon button. Default date for the new task: today when the shown week is the
+  current one; that week's Monday when it is a future week; today for past weeks.
+- Groups per day that has tasks: small-caps label "Tue 21 · Tomorrow" (`relativeDayLabel` supplies the relative part only when it
+  is Today/Tomorrow/Yesterday); rows like Today's (check + title + meta). Past, undone tasks show a small-caps "Still open" in
+  `--accent-text`; they can still be checked here (`doneAt = today`). Future tasks can be checked early.
+- Empty week: one line "No tasks this week." The ‹ › navigation already changes the week; the section follows it.
+
+### 14.7 Task editor — `src/features/tasks/TaskEditor.tsx` (+ CSS; reuse `Sheet`, `Chip`, `Button`, `InlineConfirm`, `fields.css`)
+- Props `{ open: boolean; taskId?: string; defaultDate?: DateKey; onClose: () => void }`. Title "New task" / "Edit task".
+- Fields, in order: **Title** (autofocus when new; maxLength 60 with count; required; ≥16px), **Date**: chip row from `quickDates`
+  plus a last chip "Pick a date…" that reveals a native `<input type="date">` (shown selected and labelled with the formatted date
+  when the task's date is outside the quick range), **Time**: a ghost button "Add a time" that reveals `<input type="time">` plus
+  a "Remove" link; **Note** (optional, maxLength 80 with count).
+- Buttons: primary full-width "Save task" / "Save"; for existing tasks a "Delete task" danger-subtle button with the same inline
+  two-step confirm the tracker editor uses. Enter in the title submits. Native date/time inputs are ≥16px and 44px tall, styled
+  with the field tokens and `color-scheme`, in both themes. Form state resets per open session the way HabitEditor does.
+- Validation: empty title → inline error; invalid date → inline error. Saving an existing task calls `updateTask`; a new one
+  `addTask`. Focus returns to the row's button on close.
+
+### 14.8 Sync — `src/lib/sync/` (types in `types.ts`; pure layer `tasksMerge.ts` IMPLEMENTED; engine + baseline to extend)
+- Firestore `users/{uid}/tasks/{taskId}`: `{ id, title, note?, date, time?, done, doneAt?, createdAt, deleted, updatedAt }`. The
+  deployed rules already cover it (owner-only subtree) — no rules change.
+- Types (`types.ts`, IMPLEMENTED): `LocalTasks { tasks; deletedTaskIds }`, `RemoteTask = Task & { deleted; updatedAt? }`,
+  `TaskPushOp = { type: 'setTask'; task } | { type: 'tombstoneTask'; taskId }`, `TasksMergeResult`. `LocalData` and `PushOp`
+  are UNCHANGED: habits and tasks are two independent collections with parallel logic.
+- `tasksMerge.ts` (IMPLEMENTED, smoke-tested in `src/lib/__tests__/sync-tasks-merge.test.ts`): `parseRemoteTask(id, data)` (strict
+  on title/date, lenient on optional fields, bare tombstones allowed, never throws), `remoteTasksToLocal`, `mergeTasks` (first
+  contact: union, remote fields win except a done side wins on `done`/`doneAt`, tombstones win, never tombstone an unseen id),
+  `mergeTasksWithBase(base, local, remote)` (three-way, field-by-field replay of local edits incl. un-checks; a task the cloud
+  dropped without a tombstone is kept and re-pushed), `restoreTombstonedTasks`, `diffTasksForPush`, `sameTask`, `sameTasks`
+  (order-insensitive). The engine must use these exactly as it uses the habit counterparts.
+- Engine (`engine.ts`, to extend): a second `onSnapshot` on `users/{uid}/tasks` with `includeMetadataChanges`, driving the same
+  state machine as habits (first contact → `mergeTasks`; afterwards → `mergeTasksWithBase` against the baseline at launch and the
+  last pushed state within the session; cache snapshots before the first server view handled as for habits). The two channels
+  share the write batches (both collections live under `users/{uid}`, so one batch may carry habit and task ops), the
+  `applyingRemote` guard and the store subscription; a rejected batch rolls BOTH channels back. Writes: `setTask` →
+  `set(ref, { id, title, note: note ?? deleteField(), date, time: time ?? deleteField(), done, doneAt: doneAt ?? deleteField(),
+  createdAt, updatedAt: serverTimestamp() }, { merge: true })` (never writes `deleted`); `tombstoneTask` → `set(ref, { deleted:
+  true, updatedAt: serverTimestamp() }, { merge: true })`. Every task document goes through `parseRemoteTask`.
+- Status: `connecting` until BOTH collections have a server-confirmed snapshot, then `synced`; the confirm timeout and the
+  `offline` rule cover both; `pending` is true while either collection has pending writes. The "cloud cleared" detection covers
+  acknowledged documents of both collections; `stopSync` tears both listeners down; `deleteCloudData` hard-deletes both
+  collections (tasks too) and clears the baseline.
+- Baseline (`baseline.ts`): the saved record gains the tasks side (`tasks: LocalTasks`, `ackedTasks: string[]`); a v1 record
+  (saved by phase 2) reads with an empty tasks side, which is correct because no task existed before phase 3. The baseline is
+  written only once both collections are server-confirmed with no pending writes.
+- Store hook: `applyRemoteTasks` for the tasks side, `applyRemote` for habits, both inside the `applyingRemote` guard.
+
+### 14.9 Phase-3 file ownership (parallel work — never edit files you don't own)
+- **tasks-core**: `src/lib/tasks.ts` (implement the stubs), `src/lib/__tests__/tasks.test.ts`, `src/lib/__tests__/store-tasks.test.ts`,
+  `src/lib/__tests__/store.test.ts`, `src/lib/store.ts` (bug fixes only, no signature changes).
+- **tasks-sync**: `src/lib/sync/**` except `types.ts` (engine.ts, baseline.ts, auth.ts, bootstrap.ts, firebase.ts, tasksMerge.ts bug
+  fixes), `src/lib/__tests__/sync-*.test.ts`.
+- **tasks-today**: `src/features/today/**`, `src/features/tasks/**`, `src/components/Check.tsx` + `Check.css`, `src/styles/base.css`
+  (only the `.tone-ember` rule), `src/lib/selectors.ts` (only widening `toneClass`).
+- **tasks-week**: `src/features/week/**`.
+- Integration (single owner afterwards): `src/features/manage/**` copy (reset + import preview mention tasks), README, SPEC deviations.
