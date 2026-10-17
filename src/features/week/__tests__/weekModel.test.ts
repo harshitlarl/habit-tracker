@@ -16,26 +16,26 @@ const gym: Habit = {
 };
 
 describe('cellModel', () => {
-  it('a scheduled day in the past is done or not done', () => {
+  it('a scheduled day in the past is done or due under one name (aria-pressed carries the state)', () => {
     expect(cellModel(gym, true, '2026-10-14', TODAY)).toEqual({
       state: 'done',
       future: false,
       disabled: false,
-      label: 'Gym, Wednesday 14 October, done',
+      label: 'Gym, Wednesday 14 October',
     });
     expect(cellModel(gym, false, '2026-10-14', TODAY)).toMatchObject({
       state: 'due',
       disabled: false,
-      label: 'Gym, Wednesday 14 October, not done',
+      label: 'Gym, Wednesday 14 October',
     });
   });
 
-  it('today is tappable and still "not done" (never "upcoming")', () => {
+  it('today is tappable and never "upcoming"', () => {
     expect(cellModel(gym, false, TODAY, TODAY)).toMatchObject({
       state: 'due',
       future: false,
       disabled: false,
-      label: 'Gym, Friday 16 October, not done',
+      label: 'Gym, Friday 16 October',
     });
   });
 
@@ -48,7 +48,7 @@ describe('cellModel', () => {
     expect(cellModel(gym, true, '2026-10-15', TODAY)).toMatchObject({
       state: 'bonus',
       disabled: false,
-      label: 'Gym, Thursday 15 October, done as a bonus',
+      label: 'Gym, Thursday 15 October, bonus',
     });
   });
 
@@ -64,6 +64,20 @@ describe('cellModel', () => {
       future: true,
       disabled: true,
       label: 'Gym, Saturday 17 October, not scheduled',
+    });
+  });
+
+  it('a completion already on a future day keeps its state in the name (a disabled cell has no aria-pressed)', () => {
+    expect(cellModel(gym, true, '2026-10-19', TODAY)).toEqual({
+      state: 'done',
+      future: true,
+      disabled: true,
+      label: 'Gym, Monday 19 October, done',
+    });
+    expect(cellModel(gym, true, '2026-10-17', TODAY)).toMatchObject({
+      state: 'bonus',
+      disabled: true,
+      label: 'Gym, Saturday 17 October, bonus',
     });
   });
 

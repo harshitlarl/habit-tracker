@@ -22,7 +22,7 @@ interface MessageProps {
   onMessage: (message: Message | null) => void;
 }
 
-const LEAD = 'Back up and sync your trackers across your devices. Only you can read your data.';
+const LEAD = 'Back up and sync your trackers and tasks across your devices. Only you can read your data.';
 const GENERIC_ERROR = 'Something went wrong. Try again in a moment.';
 const DELETE_FAILED = 'Could not delete your cloud data. Check your connection and try again.';
 /** Firebase's own minimum; checking here saves a round trip. */
@@ -99,8 +99,16 @@ function Booting() {
 
 type FormBusy = 'signIn' | 'signUp' | 'reset' | null;
 
+/*
+ * Signed out, the card starts collapsed to its lead and one button: in a local-first app an account
+ * form as the first thing in Settings reads like a requirement. Once opened, the form stays open for
+ * the rest of the session (the view remounts on every tab switch, so this lives at module level).
+ */
+let signInOpened = false;
+
 function SignInForm({ message, onMessage }: MessageProps) {
   const id = useId();
+  const formId = `${id}-form`;
   const emailId = `${id}-email`;
   const passwordId = `${id}-password`;
   const messageId = `${id}-message`;
@@ -111,12 +119,27 @@ function SignInForm({ message, onMessage }: MessageProps) {
   const [password, setPassword] = useState('');
   const [reveal, setReveal] = useState(false);
   const [busy, setBusy] = useState<FormBusy>(null);
+  const [opened, setOpened] = useState(signInOpened);
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
 
   const trimmedEmail = email.trim();
   const disabled = busy !== null;
   const shown: Message | null = message ?? (startupError ? { tone: 'error', text: startupError } : null);
+  // Open once asked for, and whenever a request runs or a message or error has something to say.
+  const expanded = opened || busy !== null || shown !== null;
+
+  function markOpened(): void {
+    if (opened) return;
+    signInOpened = true;
+    setOpened(true);
+  }
+
+  function openForm(): void {
+    markOpened();
+    // The form shows on this render; put the caret in its first field once it exists.
+    requestAnimationFrame(() => emailRef.current?.focus());
+  }
 
   function reject(text: string, field: HTMLInputElement | null): void {
     onMessage({ tone: 'error', text });
@@ -176,7 +199,27 @@ function SignInForm({ message, onMessage }: MessageProps) {
   return (
     <>
       <p className="sync__lead">{LEAD}</p>
-      <form className="sync__form" onSubmit={onSubmit} noValidate aria-busy={disabled || undefined}>
+      {expanded ? null : (
+        <Button
+          variant="subtle"
+          className="sync__open"
+          aria-expanded={false}
+          aria-controls={formId}
+          onClick={openForm}
+        >
+          Sign in or create account
+        </Button>
+      )}
+      <form
+        id={formId}
+        className="sync__form"
+        onSubmit={onSubmit}
+        noValidate
+        aria-busy={disabled || undefined}
+        hidden={!expanded}
+        // Shown for a message (say, after signing out) and then used: it stays open from here on.
+        onFocus={markOpened}
+      >
         <div className="field">
           <label htmlFor={emailId} className="field__label">
             <span className="small-caps">Email</span>
@@ -311,7 +354,7 @@ function Account({ user, message, onMessage }: AccountProps) {
     onMessage(null);
     try {
       await signOutUser();
-      onMessage({ tone: 'ok', text: 'Signed out. Your trackers stay on this device.' });
+      onMessage({ tone: 'ok', text: 'Signed out. Your trackers and tasks stay on this device.' });
     } catch (err) {
       onMessage({ tone: 'error', text: errorMessage(err, GENERIC_ERROR) });
     } finally {
@@ -336,7 +379,7 @@ function Account({ user, message, onMessage }: AccountProps) {
       // just above; add what it does not say rather than repeat it.
       onMessage(
         sync.status === 'error' && sync.error === text
-          ? { tone: 'ok', text: 'Your trackers are still on this device.' }
+          ? { tone: 'ok', text: 'Your trackers and tasks are still on this device.' }
           : { tone: 'error', text },
       );
       setBusy(null);
@@ -345,7 +388,7 @@ function Account({ user, message, onMessage }: AccountProps) {
     }
     try {
       await signOutUser();
-      onMessage({ tone: 'ok', text: 'Cloud data deleted. Your trackers stay on this device.' });
+      onMessage({ tone: 'ok', text: 'Cloud data deleted. Your trackers and tasks stay on this device.' });
     } catch (err) {
       onMessage({
         tone: 'error',
@@ -377,7 +420,7 @@ function Account({ user, message, onMessage }: AccountProps) {
         {confirming ? (
           <InlineConfirm
             title="Delete your cloud data?"
-            body="This removes your trackers from the cloud and signs you out. Your data stays on this device."
+            body="This removes your trackers and tasks from the cloud and signs you out. Your data stays on this device."
             confirmLabel="Delete"
             busy={busy === 'delete'}
             busyLabel="Deleting…"

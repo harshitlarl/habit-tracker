@@ -106,8 +106,8 @@ test('finishing everything due switches to the celebration and fires confetti', 
   await expect(page.locator('.confetti__canvas')).toHaveCount(1);
 });
 
-test('the + button opens the editor; a saved tracker appears and survives a reload', async ({ app: page }) => {
-  await page.getByRole('button', { name: 'Add tracker' }).click();
+test('the header + opens the editor; a saved tracker appears and survives a reload', async ({ app: page }) => {
+  await page.locator('.today__header').getByRole('button', { name: 'Add tracker', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('heading', { name: 'New tracker' })).toBeVisible();
@@ -130,10 +130,15 @@ test('Week toggles a past day and the pill returns to the current week', async (
   await expect(page.locator('#week-title')).toHaveText(/\d+ \w+$/);
   await expect(page.locator('.wk-day.is-today')).toHaveCount(1);
 
-  const cell = page.locator('.wk-cell--due:not(.is-future)').first();
-  const label = await cell.getAttribute('aria-label');
+  const due = page.locator('.wk-cell--due:not(.is-future)').first();
+  const label = (await due.getAttribute('aria-label')) ?? '';
+  expect(label).toMatch(/^.+, \w+day \d{1,2} \w+$/); // "Study 2 hours, Monday 12 October": no state in the name
+  // The cell keeps its name across the tap; aria-pressed carries done / not done.
+  const cell = page.getByRole('button', { name: label, exact: true });
+  await expect(cell).toHaveAttribute('aria-pressed', 'false');
   await cell.click();
-  await expect(page.getByRole('button', { name: label?.replace(/not done$/, 'done') ?? '' })).toBeVisible();
+  await expect(cell).toHaveAttribute('aria-pressed', 'true');
+  await expect(cell).toHaveClass(/wk-cell--done/);
   for (const future of await page.locator('.wk-cell.is-future').all()) await expect(future).toBeDisabled();
 
   await page.getByRole('button', { name: 'Previous week' }).click();
@@ -195,15 +200,22 @@ test('the theme setting updates the document and the browser chrome colour', asy
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 });
 
-test('a first run shows the empty state and Save waits for a name', async ({ page, errors }) => {
+test('a first run shows the empty state and Save asks for a name', async ({ page, errors }) => {
   void errors;
   await page.goto('/');
   await expect(page.locator('.empty__title')).toBeVisible();
   await expect(page.locator('.today__ring')).toHaveCount(0);
   await page.getByRole('button', { name: 'Add your first tracker' }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled();
-  await dialog.getByPlaceholder('e.g. Gym').fill('Gym');
+  const name = dialog.getByPlaceholder('e.g. Gym');
+  // Save stays enabled; submitting without a name explains itself and keeps the sheet open.
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog.getByText('Give it a name.')).toBeVisible();
+  await expect(name).toHaveAttribute('aria-invalid', 'true');
+  await expect(name).toBeFocused();
+  await expect(dialog).toBeVisible();
+  await name.fill('Gym');
+  await expect(dialog.getByText('Give it a name.')).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Save' })).toBeEnabled();
   for (const tab of ['Week', 'Progress', 'Trackers']) {
     await page.keyboard.press('Escape');

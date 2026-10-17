@@ -52,7 +52,8 @@ export function HabitRow({ habit, done, streak, bonus = false, index, onToggle }
         {hasMeta ? (
           <span className="habit-row__meta">
             {habit.note}
-            {habit.note && showBonus ? <span aria-hidden="true"> · </span> : null}
+            {/* Only the dot is decoration: the spaces stay in the text, so "2 hours" and "Bonus" read apart. */}
+            {habit.note && showBonus ? <>{' '}<span aria-hidden="true">·</span>{' '}</> : null}
             {showBonus ? <span className="habit-row__bonus">Bonus</span> : null}
           </span>
         ) : null}

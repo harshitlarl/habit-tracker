@@ -1,0 +1,23 @@
+# Weekly update proposals (review #48). The workflow pins every action to a commit SHA; Dependabot
+# bumps the SHA and its "# vX.Y.Z" comment together. Minor and patch updates arrive as one grouped PR
+# per ecosystem; a major version gets a PR of its own.
+#
+# After a bump of @fontsource-variable/*, run `npm run fonts` to refresh the three copies in
+# public/fonts/ (src/styles/fonts.css).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]

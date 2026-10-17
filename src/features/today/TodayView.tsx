@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
 import useStore from '../../lib/store';
 import type { Habit } from '../../lib/types';
 import { formatLongDate, formatWeekday } from '../../lib/dates';
@@ -12,6 +12,7 @@ import { Ring } from '../../components/Ring';
 import { cx } from '../../components/cx';
 import { HabitEditor } from '../manage/HabitEditor';
 import { HabitRow } from './HabitRow';
+import { TaskSection } from './TaskSection';
 import { useCelebration } from './useCelebration';
 import { useTodayModel } from './useTodayModel';
 import './TodayView.css';
@@ -32,17 +33,33 @@ function dueStatus(dueCount: number, remaining: number): string {
   return `${remaining} left`;
 }
 
+/* The view remounts on every tab switch; remember the disclosure's state for the session, as Progress
+   does for "Archived". Null until the user has toggled it, so the per-day default applies until then
+   (and keeps following the day while the view stays open: a rest day reached at midnight opens it). */
+let rememberedOpen: boolean | null = null;
+
 interface UnscheduledSectionProps {
   habits: Habit[];
   doneIds: ReadonlySet<string>;
   streaks: ReadonlyMap<string, number>;
+  /**
+   * Start expanded: on a rest day nothing else competes for attention, and a tracker just created for
+   * other days must not vanish into a collapsed row. The user's toggle wins afterwards.
+   */
+  defaultOpen: boolean;
   onToggle: (habit: Habit) => void;
 }
 
-/** "Not scheduled today": collapsed by default, every tracker still checkable as a bonus. */
-function UnscheduledSection({ habits, doneIds, streaks, onToggle }: UnscheduledSectionProps) {
-  const [open, setOpen] = useState(false);
+/** "Not scheduled today": collapsed by default (open on a rest day); every tracker still checkable as a bonus. */
+function UnscheduledSection({ habits, doneIds, streaks, defaultOpen, onToggle }: UnscheduledSectionProps) {
+  const [chosen, setChosen] = useState<boolean | null>(rememberedOpen);
+  const open = chosen ?? defaultOpen;
   const listId = useId();
+
+  function toggle(): void {
+    rememberedOpen = !open;
+    setChosen(!open);
+  }
 
   return (
     <section className="today__section">
@@ -52,10 +69,13 @@ function UnscheduledSection({ habits, doneIds, streaks, onToggle }: UnscheduledS
           className="today__toggle"
           aria-expanded={open}
           aria-controls={listId}
-          onClick={() => setOpen((v) => !v)}
+          onClick={toggle}
         >
+          {/* Spoken as "Not scheduled today, 2 trackers": the hidden spans keep label and count apart. */}
           <span className="small-caps small-caps--12">Not scheduled today</span>
+          <span className="sr-only">, </span>
           <span className="small-caps small-caps--12 tabular today__toggle-count">{habits.length}</span>
+          <span className="sr-only"> {habits.length === 1 ? 'tracker' : 'trackers'}</span>
           <Icon name="chevronRight" size={18} className="today__chevron" />
         </button>
       </h2>
@@ -82,14 +102,33 @@ export function TodayView() {
   const { today, active, due, unscheduled, doneIds, doneCount, allDone, streaks, motivation } = useTodayModel();
   const toggleCompletion = useStore((s) => s.toggleCompletion);
   const [editorOpen, setEditorOpen] = useState(false);
+  /** The control that opened the tracker sheet; focus goes back to it when the sheet closes. */
+  const editorTriggerRef = useRef<HTMLElement | null>(null);
+  const addTrackerRef = useRef<HTMLButtonElement>(null);
   const dueHeadingId = useId();
 
   const fire = useCelebration(allDone, today);
   const confettiColors = useMemo(() => [...new Set(due.map((h) => habitColorVar(h.color)))], [due]);
 
   const toggle = (habit: Habit): void => toggleCompletion(habit.id, today);
-  const openEditor = (): void => setEditorOpen(true);
+  const openEditor = (e: MouseEvent<HTMLButtonElement>): void => {
+    editorTriggerRef.current = e.currentTarget;
+    setEditorOpen(true);
+  };
   const closeEditor = (): void => setEditorOpen(false);
+
+  // After the commit that closed the tracker sheet, focus returns to the button that opened it — or,
+  // when that was the empty state's "Add your first tracker" (gone once the first tracker is saved),
+  // to the header's "Add tracker" that took its place. WebKit does not focus a tapped button, so the
+  // Sheet's own restore has nothing to return to on the phone; the Tasks section does the same (§14.10).
+  useEffect(() => {
+    if (editorOpen) return;
+    const trigger = editorTriggerRef.current;
+    if (!trigger) return;
+    editorTriggerRef.current = null;
+    const target = trigger.isConnected ? trigger : addTrackerRef.current;
+    target?.focus({ preventScroll: true });
+  }, [editorOpen]);
 
   const remaining = due.length - doneCount;
   const weekday = formatWeekday(today);
@@ -103,17 +142,40 @@ export function TodayView() {
           </h1>
           <p className="small-caps small-caps--12 today__date">{formatLongDate(today)}</p>
         </div>
-        {due.length > 0 ? (
-          <Ring value={doneCount / due.length} size={56} label="Today's progress" className="today__ring">
-            <span>
-              {doneCount}/{due.length}
-            </span>
-          </Ring>
+        {active.length > 0 ? (
+          <div className="today__tools">
+            {due.length > 0 ? (
+              <Ring
+                value={doneCount / due.length}
+                size={56}
+                label="Today's progress"
+                valueText={`${doneCount} of ${due.length} done`}
+                className="today__ring"
+              >
+                <span>
+                  {doneCount}/{due.length}
+                </span>
+              </Ring>
+            ) : null}
+            {/* "Add tracker" lives up here, not in a floating corner (a deliberate SPEC §3.1 deviation): a
+                fixed "+" shared its x-band with every row's Check and caught taps meant for a check. Without
+                trackers the empty state below carries the primary button instead. */}
+            <button
+              ref={addTrackerRef}
+              type="button"
+              className="today__add"
+              aria-label="Add tracker"
+              onClick={openEditor}
+            >
+              <Icon name="plus" size={20} />
+            </button>
+          </div>
         ) : null}
       </header>
 
       {active.length === 0 ? (
         // No trackers: the deterministic noHabits copy becomes the empty state's own words.
+        // Tasks still follow, so a first task can be planned before the first tracker.
         <EmptyState
           className="today__empty"
           title={motivation.title}
@@ -154,16 +216,22 @@ export function TodayView() {
               <p className="today__rest">Nothing is scheduled on {weekday}s.</p>
             )}
           </section>
-
-          {unscheduled.length > 0 ? (
-            <UnscheduledSection habits={unscheduled} doneIds={doneIds} streaks={streaks} onToggle={toggle} />
-          ) : null}
         </>
       )}
 
-      <button type="button" className="fab" aria-label="Add tracker" onClick={openEditor}>
-        <Icon name="plus" size={28} />
-      </button>
+      {/* One fixed slot whether or not trackers exist: the first tracker arriving (or the last one
+          leaving, through sync) must not remount the section and close a task sheet mid-edit. */}
+      <TaskSection today={today} />
+
+      {unscheduled.length > 0 ? (
+        <UnscheduledSection
+          habits={unscheduled}
+          doneIds={doneIds}
+          streaks={streaks}
+          defaultOpen={due.length === 0}
+          onToggle={toggle}
+        />
+      ) : null}
 
       <Confetti fire={fire} colors={confettiColors} />
       <HabitEditor open={editorOpen} onClose={closeEditor} />

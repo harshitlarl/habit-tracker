@@ -29,6 +29,15 @@
   transform: scale(0.92);
 }
 
+/* Square variant (one-time tasks): the same ring, mark and spring on a rounded square. */
+.check--square {
+  border-radius: var(--r-sm);
+}
+
+.check--square .check__ring {
+  border-radius: calc(var(--r-sm) - 2px); /* 8px */
+}
+
 .check.is-checked .check__ring {
   background: var(--tone, var(--ember));
   border-color: var(--tone, var(--ember));

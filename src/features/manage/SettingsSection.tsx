@@ -1,10 +1,11 @@
-import { useId, useRef, useState, type ChangeEvent } from 'react';
+import { useId, useRef, useState, type ChangeEvent, type Ref } from 'react';
 import { format } from 'date-fns';
-import useStore, { validateAppData } from '../../lib/store';
+import useStore, { useStorageHealth, validateAppData } from '../../lib/store';
 import type { AppData, Theme } from '../../lib/types';
 import { todayKey } from '../../lib/dates';
 import { totalCompletions } from '../../lib/streaks';
 import { isIOS, isStandalone } from '../../lib/platform';
+import { isSyncConfigured } from '../../lib/sync/firebase';
 import { useSyncStore } from '../../lib/sync/syncStore';
 import { signOutUser } from '../../lib/sync/auth';
 import { stopSync } from '../../lib/sync/engine';
@@ -37,6 +38,19 @@ interface PendingImport {
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** "a and b" / "a, b and c" (two or more parts). */
+const listOf = (parts: readonly string[]): string =>
+  parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1] ?? ''}`;
+
+/**
+ * Signed in, an import is not a local affair: the trackers it replaces are tombstoned, tombstones sync
+ * to every device and always win, and the backup's check-ins replace the account's. Say so plainly.
+ */
+const IMPORT_SIGNED_IN =
+  'Trackers and tasks not in this backup are deleted from your account and every signed-in device, and check-ins made since it was exported are removed. There is no undo.';
+
+const NOT_SAVING = 'This device is not saving changes right now — export a backup.';
+
 interface ResetCopy {
   title: string;
   body: string;
@@ -44,34 +58,40 @@ interface ResetCopy {
 }
 
 /**
- * The reset confirmation. Signed in, it promises the account holds everything only when that is
- * known (`accountCurrent`); offline, still connecting or in error, unsynced check-ins would die
- * with the device copy, so the copy warns instead.
+ * The reset confirmation. The button, the question and the confirm all say "reset". Signed in, it
+ * promises the account holds everything only when that is known (`accountCurrent`); offline, still
+ * connecting or in error, unsynced check-ins would die with the device copy, so the copy warns instead.
  */
 function describeReset(signedIn: boolean, accountCurrent: boolean): ResetCopy {
   if (!signedIn) {
     return {
-      title: 'Delete everything?',
-      body: 'Every tracker and check-in on this device will be removed and the theme goes back to System. Export a backup first if you might want it back.',
-      confirmLabel: 'Delete everything',
+      title: 'Reset this device?',
+      body: 'Every tracker, check-in and task on this device will be removed and the theme goes back to System. Export a backup first if you might want it back.',
+      confirmLabel: 'Reset',
     };
   }
   if (accountCurrent) {
     return {
       title: 'Reset this device?',
-      body: "You'll be signed out first, so your trackers stay safe in your account. Then every tracker and check-in on this device will be removed and the theme goes back to System. Sign in again any time to bring it all back.",
+      body: "You'll be signed out first, so your trackers and tasks stay safe in your account. Then every tracker, check-in and task on this device will be removed and the theme goes back to System. Sign in again any time to bring it all back.",
       confirmLabel: 'Sign out and reset',
     };
   }
   return {
     title: 'Reset this device?',
-    body: "Some changes here may not have reached your account yet — check the status above, or reset anyway and lose them. You'll be signed out first, then every tracker and check-in on this device is removed and the theme goes back to System.",
+    body: "Some changes here may not have reached your account yet — check the status above, or reset anyway and lose them. You'll be signed out first, then every tracker, check-in and task on this device is removed and the theme goes back to System.",
     confirmLabel: 'Reset anyway',
   };
 }
 
+/**
+ * "1 tracker · 42 check-ins · 3 tasks · exported 16 Oct 2026". Tasks are named only when the backup
+ * holds some: a pre-phase-3 file has no `tasks` key, and a file with none reads as it always did.
+ */
 function describeBackup(data: AppData): string {
   const parts = [plural(data.habits.length, 'tracker'), plural(totalCompletions(data.completions), 'check-in')];
+  const taskCount = data.tasks?.length ?? 0;
+  if (taskCount > 0) parts.push(plural(taskCount, 'task'));
   if (data.exportedAt) {
     const exported = new Date(data.exportedAt);
     if (!Number.isNaN(exported.getTime())) parts.push(`exported ${format(exported, 'd MMM yyyy')}`);
@@ -92,8 +112,17 @@ function downloadBlob(blob: Blob, fileName: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-/** Sync, theme, backup export/import, reset, install hint and the about line. */
-export function SettingsSection() {
+export interface SettingsSectionProps {
+  /** The "Settings" heading (focusable, tabIndex -1): the Trackers header's gear scrolls to it. */
+  titleRef?: Ref<HTMLHeadingElement>;
+}
+
+/**
+ * Settings, in this order: Appearance → Your data → Sync across devices → Install on iPhone →
+ * Reset this device, then the about line. A first-time user meets the local-first basics before any
+ * account form, and the one destructive action comes last.
+ */
+export function SettingsSection({ titleRef }: SettingsSectionProps) {
   const theme = useStore((s) => s.settings.theme);
   const setTheme = useStore((s) => s.setTheme);
   const exportData = useStore((s) => s.exportData);
@@ -101,16 +130,24 @@ export function SettingsSection() {
   const resetAll = useStore((s) => s.resetAll);
   const habitCount = useStore((s) => s.habits.length);
   const completionCount = useStore((s) => totalCompletions(s.completions));
+  const taskCount = useStore((s) => s.tasks.length);
+  const installHintDismissed = useStore((s) => s.settings.installHintDismissed);
+  const notSaving = useStorageHealth((s) => s.error !== null || s.unavailable);
   const signedIn = useSyncStore((s) => s.user !== null);
   const booting = useSyncStore((s) => s.booting);
   const syncStatus = useSyncStore((s) => s.status);
   const syncPending = useSyncStore((s) => s.pending);
 
+  /** Outcome of the latest export or import, shown in the "Your data" card. */
   const [status, setStatus] = useState<Status | null>(null);
+  /** Outcome of a reset (or of a sign-out that kept it from happening), shown in the Reset card. */
+  const [resetStatus, setResetStatus] = useState<Status | null>(null);
   const [pending, setPending] = useState<PendingImport | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [standalone] = useState(isStandalone);
+  const [ios] = useState(isIOS);
+  const [syncAvailable] = useState(isSyncConfigured);
   const fileRef = useRef<HTMLInputElement>(null);
   const resetRef = useRef<HTMLButtonElement>(null);
   const resetHintId = useId();
@@ -119,6 +156,7 @@ export function SettingsSection() {
     const fileName = `momentum-backup-${todayKey()}.json`;
     const blob = new Blob([JSON.stringify(exportData(), null, 2)], { type: 'application/json' });
     setPending(null);
+    setResetStatus(null);
 
     // Home Screen web apps on iOS cannot reliably download a file; the share sheet offers
     // "Save to Files" and works in both Safari and standalone mode.
@@ -146,6 +184,7 @@ export function SettingsSection() {
     e.target.value = '';
     if (!file) return;
     setPending(null);
+    setResetStatus(null);
 
     let parsed: unknown;
     try {
@@ -203,7 +242,7 @@ export function SettingsSection() {
       } catch (error) {
         setResetting(false);
         cancelReset();
-        setStatus({
+        setResetStatus({
           tone: 'error',
           text: `Could not sign out, so nothing was reset. ${errorMessage(error, 'Try again in a moment.')}`,
         });
@@ -214,25 +253,32 @@ export function SettingsSection() {
     resetAll();
     setConfirmReset(false);
     setPending(null);
-    setStatus({
+    setStatus(null);
+    setResetStatus({
       tone: 'ok',
       text: wasSignedIn ? 'Signed out. Everything on this device has been cleared.' : 'Everything has been cleared.',
     });
   }
 
-  const hasData = habitCount > 0 || completionCount > 0;
-  const syncNote = signedIn ? ', and the backup syncs to your account' : '';
+  const hasData = habitCount > 0 || completionCount > 0 || taskCount > 0;
+  // "The 2 trackers, 5 check-ins and 3 tasks on this device" — tasks named only when there are some,
+  // since an import replaces them too (a backup without tasks leaves none).
+  const onDevice = [plural(habitCount, 'tracker'), plural(completionCount, 'check-in')];
+  if (taskCount > 0) onDevice.push(plural(taskCount, 'task'));
   // The account is known to hold everything only once the last snapshot came from the server with
   // no write still waiting. Offline, connecting or in error, a reset could lose unsynced check-ins.
   const resetCopy = describeReset(signedIn, syncStatus === 'synced' && !syncPending);
+  // One install prompt at a time: in iOS Safari the bottom banner (InstallHint) says it until dismissed.
+  const installBannerShowing = ios && !standalone && !installHintDismissed;
+  const showInstallCard = !standalone && !installBannerShowing;
+  // A fresh Home Screen copy starts empty (its own storage, apart from Safari's): point at the way back.
+  const movingOver = standalone && !signedIn && !booting && habitCount === 0 && taskCount === 0;
 
   return (
     <section className="settings" aria-labelledby="settings-title">
-      <h2 id="settings-title" className="display display--lg settings__title">
+      <h2 id="settings-title" ref={titleRef} tabIndex={-1} className="display display--lg settings__title">
         Settings
       </h2>
-
-      <SyncSection />
 
       <div className="card settings__group">
         <p className="small-caps settings__label">Appearance</p>
@@ -250,9 +296,19 @@ export function SettingsSection() {
         <p className="small-caps settings__label">Your data</p>
         <p className="settings__body">
           {signedIn
-            ? 'Your trackers live on this device and sync to your account. A backup file is still worth keeping now and then.'
+            ? 'Your trackers and tasks live on this device and sync to your account. A backup file is still worth keeping now and then.'
             : 'Everything is stored on this device only. Export a backup now and then, and import it to pick up on a new phone.'}
         </p>
+        <p className="settings__warning" role="status">
+          {notSaving ? NOT_SAVING : null}
+        </p>
+        {movingOver ? (
+          <p className="settings__note">
+            {syncAvailable
+              ? 'Moving over from Safari? Import your backup or sign in.'
+              : 'Moving over from Safari? Import your backup.'}
+          </p>
+        ) : null}
         <div className="settings__buttons">
           <Button variant="subtle" icon={<Icon name="download" size={20} />} onClick={onExport}>
             Export
@@ -277,9 +333,11 @@ export function SettingsSection() {
             body={
               <>
                 {pending.fileName} holds {describeBackup(pending.data)}.{' '}
-                {hasData
-                  ? `The ${plural(habitCount, 'tracker')} and ${plural(completionCount, 'check-in')} on this device will be replaced${syncNote}.`
-                  : `Nothing on this device will be lost${syncNote}.`}
+                {signedIn
+                  ? IMPORT_SIGNED_IN
+                  : hasData
+                    ? `The ${listOf(onDevice)} on this device will be replaced.`
+                    : 'Nothing on this device will be lost.'}
               </>
             }
             confirmLabel="Replace"
@@ -292,7 +350,28 @@ export function SettingsSection() {
         <p className={cx('settings__status', status?.tone === 'error' && 'is-error')} role="status">
           {status ? status.text : null}
         </p>
+      </div>
 
+      <SyncSection />
+
+      {showInstallCard ? (
+        <div className="card settings__group settings__install">
+          <span className="settings__install-icon" aria-hidden="true">
+            <Icon name="share" size={24} />
+          </span>
+          <div className="settings__install-text">
+            <h3 className="display display--md">Install on iPhone</h3>
+            <p className="settings__body">
+              Open in Safari → tap Share → Add to Home Screen. Momentum then opens full screen from your Home Screen
+              and works offline.{' '}
+              The installed app starts with its own empty copy: export a backup here first, then import it there
+              {syncAvailable ? ' (or sign in on both)' : ''}.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="card settings__group settings__reset">
         <div className="settings__danger">
           {confirmReset ? (
             <InlineConfirm
@@ -324,22 +403,10 @@ export function SettingsSection() {
             </>
           )}
         </div>
+        <p className={cx('settings__reset-status', resetStatus?.tone === 'error' && 'is-error')} role="status">
+          {resetStatus ? resetStatus.text : null}
+        </p>
       </div>
-
-      {standalone ? null : (
-        <div className="card settings__group settings__install">
-          <span className="settings__install-icon" aria-hidden="true">
-            <Icon name="share" size={24} />
-          </span>
-          <div className="settings__install-text">
-            <h3 className="display display--md">Install on iPhone</h3>
-            <p className="settings__body">
-              Open in Safari → tap Share → Add to Home Screen. Momentum then opens full screen from your Home Screen
-              and works offline.
-            </p>
-          </div>
-        </div>
-      )}
 
       <p className="settings__about small-caps">
         Momentum · v1 · {signedIn ? 'synced to your account' : 'data stays on this device'}

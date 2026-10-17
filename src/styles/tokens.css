@@ -14,7 +14,7 @@
   --seg-thumb: #FBF7EF; /* SegmentedControl thumb: the raised surface */
   --ink: #211B17;
   --ink-2: #5F554D;
-  --ink-3: #9A8F85; /* 2.7:1 on paper: non-text marks only (the unscheduled dash, hover borders) */
+  --ink-3: #9A8F85; /* 2.7:1 on paper: non-text marks only (the strike on a done task, hover borders) */
   --line: rgba(33, 27, 23, 0.10);
   --line-strong: rgba(33, 27, 23, 0.50);
   --ember: #D6602F;

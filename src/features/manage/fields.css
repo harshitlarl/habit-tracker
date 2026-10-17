@@ -61,14 +61,18 @@
   box-shadow: 0 0 0 3px var(--danger-soft);
 }
 
+/* Inline errors are role="status" regions that stay in the DOM (and so in the accessibility tree)
+   while empty: VoiceOver announces text that arrives in a live region it already knows, not one that
+   appears in the same frame as its words. Empty, a line has no height and takes no space. */
 .field__error {
   font-size: 13px;
   line-height: 1.4;
   color: var(--danger);
 }
 
-.field__error:empty {
-  display: none;
+/* Cancels the .field gap above an empty line. */
+.field > .field__error:empty {
+  margin-top: calc(-1 * var(--s-2));
 }
 
 .field__hint {
@@ -91,6 +95,6 @@
   margin-bottom: var(--s-2);
 }
 
-.fieldset .field__error {
+.fieldset .field__error:not(:empty) {
   margin-top: var(--s-2);
 }

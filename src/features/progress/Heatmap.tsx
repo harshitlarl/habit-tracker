@@ -15,7 +15,7 @@ export interface HeatmapProps {
 /**
  * 12 rows (oldest at the top, the current week at the bottom) × 7 columns Mon…Sun, aligned with
  * the Week view. done → habit tone; scheduled-but-not-done → hairline outline (ember for a
- * still-open today); bonus → tone at reduced opacity; unscheduled / before createdAt / future → empty.
+ * still-open today); bonus → a round tone ring, no fill; unscheduled / before createdAt / future → empty.
  * The header uses one letter per day (M T W T F S S): two letters do not fit a 16px column at the
  * standard label size, and the Monday-first order matches the Week view.
  */

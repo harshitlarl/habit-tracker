@@ -1,6 +1,13 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { expectTextContrast, expectToneContrast } from './helpers/contrast';
+import {
+  TONES,
+  expectHeatmapMarkContrast,
+  expectTextContrast,
+  expectToneContrast,
+  expectWeekMarkContrast,
+  type HeatContrast,
+} from './helpers/contrast';
 
 /*
  * One continuous first day with Momentum on an emulated iPhone: empty state → two trackers →
@@ -71,6 +78,9 @@ interface StoredState {
   settings: { theme: string; installHintDismissed: boolean };
   /** Tombstones (persist version 2); absent in the version-1 records the suite seeds. */
   deletedIds?: string[];
+  /** One-time tasks and their tombstones (persist version 3); absent in the seeded records. */
+  tasks?: Array<{ id: string; title: string; date: string; time?: string; done: boolean }>;
+  deletedTaskIds?: string[];
 }
 interface Stored {
   version: number;
@@ -202,7 +212,11 @@ async function expectTapTargets(locator: Locator, min: number, what: string): Pr
   ).toEqual([]);
 }
 
-/** No horizontal scroll, and the content column never ends under the fixed bottom stack or the "+". */
+/**
+ * No horizontal scroll, the content column never ends under the fixed bottom stack, and on Today the
+ * weekday headline clears the header tools (the ring and the "Add tracker" button that replaced the
+ * floating "+", SPEC §3.1 deviation).
+ */
 async function expectLayoutIntact(page: Page, where: string): Promise<void> {
   const m = await page.evaluate(() => {
     const main = document.querySelector<HTMLElement>('.app__main');
@@ -210,15 +224,24 @@ async function expectLayoutIntact(page: Page, where: string): Promise<void> {
     const bottom = document.querySelector<HTMLElement>('.app__bottom');
     if (!main || !view || !bottom) return null;
     main.scrollTop = main.scrollHeight;
-    const fab = document.querySelector<HTMLElement>('.fab');
     const result = {
       docOverflow: document.documentElement.scrollWidth - window.innerWidth,
       mainOverflow: main.scrollWidth - main.clientWidth,
       viewBottom: view.getBoundingClientRect().bottom,
       bottomTop: bottom.getBoundingClientRect().top,
-      fabBottom: fab ? fab.getBoundingClientRect().bottom : null,
+      titleRight: null as number | null,
+      toolsLeft: null as number | null,
     };
     main.scrollTop = 0;
+    const title = document.querySelector('#today-title');
+    const tools = document.querySelector('.today__tools');
+    if (title && tools) {
+      // The text itself, not the h1's block box, which spans the column.
+      const range = document.createRange();
+      range.selectNodeContents(title);
+      result.titleRight = range.getBoundingClientRect().right;
+      result.toolsLeft = tools.getBoundingClientRect().left;
+    }
     return result;
   });
   expect(m, `${where}: layout nodes present`).not.toBeNull();
@@ -226,8 +249,8 @@ async function expectLayoutIntact(page: Page, where: string): Promise<void> {
   expect(m.docOverflow, `${where}: horizontal page scroll`).toBeLessThanOrEqual(0);
   expect(m.mainOverflow, `${where}: horizontal content scroll`).toBe(0);
   expect(m.viewBottom, `${where}: content ends under the tab bar`).toBeLessThanOrEqual(m.bottomTop);
-  if (m.fabBottom !== null) {
-    expect(m.fabBottom, `${where}: the + button overlaps the tab bar`).toBeLessThanOrEqual(m.bottomTop);
+  if (m.titleRight !== null && m.toolsLeft !== null) {
+    expect(m.titleRight, `${where}: the weekday runs under the header tools`).toBeLessThanOrEqual(m.toolsLeft);
   }
 }
 
@@ -335,8 +358,18 @@ test.describe('Momentum on an iPhone', () => {
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole('heading', { name: 'New tracker' })).toBeVisible();
       await expect(html).toHaveAttribute('data-sheet-open', '');
-      await expect(dialog.getByPlaceholder('e.g. Gym')).toBeFocused();
-      await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled();
+      const nameField = dialog.getByPlaceholder('e.g. Gym');
+      await expect(nameField).toBeFocused();
+      // Save stays enabled (polish M10): a submit without a name says why, marks the field and focuses it.
+      const save = dialog.getByRole('button', { name: 'Save' });
+      await expect(save).toBeEnabled();
+      await expect(dialog.getByText('Give it a name.')).toHaveCount(0);
+      await save.click();
+      await expect(dialog.getByText('Give it a name.')).toBeVisible();
+      await expect(nameField).toHaveAttribute('aria-invalid', 'true');
+      await expect(nameField).toHaveAccessibleDescription('Give it a name.');
+      await expect(nameField).toBeFocused();
+      await expect(dialog.getByRole('heading', { name: 'New tracker' })).toBeVisible(); // nothing was saved
       await expectAllButtonsNamed(page, 'New tracker sheet');
       await expectTapTargets(dialog.locator('.sheet__close'), 44, 'sheet close');
       await expectTextContrast(page, 'New tracker sheet (light)');
@@ -352,7 +385,9 @@ test.describe('Momentum on an iPhone', () => {
         contentType: 'application/json',
       });
 
-      await dialog.getByPlaceholder('e.g. Gym').fill('Gym');
+      await nameField.fill('Gym');
+      await expect(dialog.getByText('Give it a name.')).toHaveCount(0); // the error follows the field live
+      await expect(nameField).not.toHaveAttribute('aria-invalid', 'true');
       // A typed emoji (even a ZWJ sequence) becomes the face; picking from the grid clears the field.
       const custom = dialog.getByPlaceholder('Or type your own');
       await custom.fill('🏋️‍♀️');
@@ -375,7 +410,8 @@ test.describe('Momentum on an iPhone', () => {
     });
 
     await test.step('adds "Study 2 hours" every day with a note', async () => {
-      await page.getByRole('button', { name: 'Add tracker', exact: true }).click(); // the floating +
+      // The header "+" next to the ring (it replaced the floating button, polish V1).
+      await page.getByRole('button', { name: 'Add tracker', exact: true }).click();
       await expect(dialog.getByRole('heading', { name: 'New tracker' })).toBeVisible();
       await dialog.getByPlaceholder('e.g. Gym').fill('Study 2 hours');
       await pickRadio(page, 'Read');
@@ -467,7 +503,12 @@ test.describe('Momentum on an iPhone', () => {
         await expect(cells).toHaveCount(7);
         await expect(cells.nth(TODAY_IDX)).toBeEnabled();
         await expect(cells.nth(TODAY_IDX)).toHaveClass(/wk-cell--done/);
-        await expect(cells.nth(TODAY_IDX)).toHaveAttribute('aria-label', /, done$/);
+        // A cell is a toggle button: aria-pressed carries done, the name stays "Gym, Saturday 17 October" (V5).
+        await expect(cells.nth(TODAY_IDX)).toHaveAttribute('aria-pressed', 'true');
+        await expect(cells.nth(TODAY_IDX)).toHaveAttribute(
+          'aria-label',
+          `${r === 0 ? 'Gym' : 'Study 2 hours'}, ${todayName} ${longDate(TODAY)}`,
+        );
         for (let d = 0; d < 7; d += 1) {
           if (d === TODAY_IDX) continue;
           // Created today: earlier days are outside the tracker's life, later days are in the future.
@@ -543,10 +584,12 @@ test.describe('Momentum on an iPhone', () => {
       const cell = studyRow.locator('.wk-cell').nth(YESTERDAY_IDX);
       await expect(cell).toBeEnabled();
       await expect(cell).toHaveClass(/wk-cell--due/);
-      await expect(cell).toHaveAttribute('aria-label', /not done$/);
+      await expect(cell).toHaveAttribute('aria-pressed', 'false');
+      const cellName = (await cell.getAttribute('aria-label')) ?? '';
       await cell.click();
       await expect(cell).toHaveClass(/wk-cell--done/);
-      await expect(cell).toHaveAttribute('aria-label', /, done$/);
+      await expect(cell).toHaveAttribute('aria-pressed', 'true');
+      await expect(cell, 'the name does not change under the tap').toHaveAttribute('aria-label', cellName);
       await cell.click();
       await expect(cell).toHaveClass(/wk-cell--due/);
       await cell.click(); // leave it done: Study now has a two-day streak
@@ -716,10 +759,10 @@ test.describe('Momentum on an iPhone', () => {
       await expect(page.locator('.today__rest')).toHaveText(`Nothing is scheduled on ${todayName}s.`);
       await expect(page.locator('.today__section-head').first()).toContainText('Rest day');
       const toggle = page.locator('.today__toggle');
-      await expect(toggle).toHaveAttribute('aria-expanded', 'false'); // collapsed by default
-      await expect(toggle).toContainText('1');
-      await toggle.click();
+      // On a rest day the disclosure starts open: nothing else competes for attention (polish V2).
       await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(toggle).toContainText('1');
+      await expect(toggle).toHaveAccessibleName(/^Not scheduled today\s*,\s*1\s+tracker$/);
       const bonusRow = page.locator('.today__list .habit-row').filter({ hasText: 'Gym session' });
       // It was checked earlier today while still scheduled; that check now reads as a bonus.
       await expect(bonusRow).toHaveClass(/is-done/);
@@ -738,7 +781,8 @@ test.describe('Momentum on an iPhone', () => {
       await openTab(page, 'Week');
       const cell = page.locator('.wk-row').filter({ hasText: 'Gym session' }).locator('.wk-cell').nth(TODAY_IDX);
       await expect(cell).toHaveClass(/wk-cell--bonus/);
-      await expect(cell).toHaveAttribute('aria-label', /done as a bonus$/);
+      await expect(cell).toHaveAttribute('aria-label', /, bonus$/);
+      await expect(cell).toHaveAttribute('aria-pressed', 'true');
 
       // Back to weekdays for the rest of the run.
       await openTab(page, 'Trackers');
@@ -867,7 +911,7 @@ test.describe('Momentum on an iPhone', () => {
 
       const stored = await readStore(page);
       expect(stored, `localStorage["${STORAGE_KEY}"] is present`).not.toBeNull();
-      expect(stored?.version).toBe(2); // persist version 2 since cloud sync (tombstones); backups stay at version 1
+      expect(stored?.version).toBe(3); // persist v2 added tombstones, v3 one-time tasks; backups stay at version 1
       expect(stored?.state.habits.map((h) => h.name)).toEqual(['Gym session']);
       expect(stored?.state.settings).toEqual({ theme: 'dark', installHintDismissed: true });
 
@@ -899,14 +943,18 @@ test.describe('Momentum on an iPhone', () => {
       await openTab(page, 'Trackers');
       await page.getByRole('button', { name: 'Reset this device' }).click();
       const confirm = page.locator('.settings__danger .confirm');
-      await expect(confirm).toContainText('Delete everything?');
+      // The button, the question and the confirm all say "reset" (polish M5).
+      await expect(confirm).toContainText('Reset this device?');
+      await expect(confirm).toContainText('Every tracker, check-in and task on this device will be removed');
       await confirm.getByRole('button', { name: 'Cancel' }).click();
       await expect(confirm).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Reset this device' })).toBeFocused();
 
       await page.getByRole('button', { name: 'Reset this device' }).click();
-      await page.locator('.settings__danger .confirm').getByRole('button', { name: 'Delete everything' }).click();
-      await expect(status).toHaveText('Everything has been cleared.');
+      await page.locator('.settings__danger .confirm').getByRole('button', { name: 'Reset', exact: true }).click();
+      // The outcome is announced in the Reset card itself, not under Your data (polish M3).
+      await expect(page.locator('.settings__reset-status')).toHaveText('Everything has been cleared.');
+      await expect(status).toHaveText('');
       await expect(page.locator('.manage-row')).toHaveCount(0);
       await expect(page.locator('.empty')).toBeVisible();
       await expect(html).toHaveAttribute('data-theme', 'light'); // back to System, which is light here
@@ -917,6 +965,8 @@ test.describe('Momentum on an iPhone', () => {
         completions: {},
         settings: { theme: 'system', installHintDismissed: false },
         deletedIds: [],
+        tasks: [],
+        deletedTaskIds: [],
       });
 
       await openTab(page, 'Today');
@@ -983,6 +1033,120 @@ test.describe('Momentum on an iPhone', () => {
     await expect(page.locator('html')).toHaveAttribute('data-sheet-open', '');
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(issues).toEqual([]);
+  });
+
+  test('Week marks for bonus and unscheduled days keep 3:1 on the paper and on today\'s band, in both themes', async ({
+    page,
+  }, testInfo) => {
+    const issues = collectConsole(page);
+    // One tracker per tone, scheduled only on tomorrow's weekday: today and the same weekday last week are
+    // unscheduled, and both are checked off — bonus marks on today's band and on the paper of last week.
+    // "Rest" has the same days and no check-ins: dashes in both places. Same seed whatever the weekday.
+    const onlyTomorrow = [(TODAY_IDX + 1) % 7];
+    const habits: SeedHabit[] = [...TONES, 'rest'].map((tone, order) => ({
+      id: `mark-${tone}`,
+      name: tone === 'rest' ? 'Rest' : tone.charAt(0).toUpperCase() + tone.slice(1),
+      emoji: '⭐',
+      color: tone === 'rest' ? 'graphite' : tone,
+      days: onlyTomorrow,
+      createdAt: daysAgo(14),
+      order,
+    }));
+    const completions: Record<string, Record<string, true>> = {};
+    for (const tone of TONES) completions[`mark-${tone}`] = { [TODAY]: true, [daysAgo(7)]: true };
+    const data = JSON.stringify({
+      version: 1,
+      state: { habits, completions, settings: { theme: 'system', installHintDismissed: true } },
+    });
+    await page.addInitScript(
+      ([key, value]) => {
+        if (!localStorage.getItem(key)) localStorage.setItem(key, value);
+      },
+      [STORAGE_KEY, data] as const,
+    );
+    await page.goto('/');
+    await openTab(page, 'Week');
+    await expect(page.locator('.wk-row')).toHaveCount(TONES.length + 1);
+
+    const report: Record<string, unknown> = {};
+    for (const theme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme: theme });
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      // This week: today's column sits on the ember band.
+      await expect(page.locator('.wk-eyebrow')).toHaveText('This week');
+      await expect(page.locator('.wk-cell--bonus')).toHaveCount(TONES.length);
+      const band = await expectWeekMarkContrast(page, `Week, today's band (${theme})`, ['bonus', 'off']);
+      expect(band.filter((m) => m.state === 'bonus' && m.on === 'band'), `${theme}: a bonus per tone on the band`).toHaveLength(
+        TONES.length,
+      );
+      expect(band.some((m) => m.state === 'off' && m.on === 'band'), `${theme}: a dash on the band`).toBe(true);
+      // Last week: every mark on the paper.
+      await page.getByRole('button', { name: 'Previous week' }).click();
+      await expect(page.locator('.wk-eyebrow')).toContainText('Last week');
+      await expect(page.locator('.wk-cell--bonus')).toHaveCount(TONES.length);
+      const paper = await expectWeekMarkContrast(page, `Week, paper (${theme})`, ['bonus', 'off', 'due']);
+      expect(paper.every((m) => m.on === 'paper'), `${theme}: no band on a past week`).toBe(true);
+      await page.locator('.wk-eyebrow').getByRole('button', { name: 'This week' }).click();
+      report[theme] = { band, paper };
+    }
+    await testInfo.attach('week-mark-contrast.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
+    expect(issues).toEqual([]);
+  });
+
+  test('Progress heatmaps: done, bonus, missed and pending marks keep 3:1 against the card, in both themes', async ({ page }, testInfo) => {
+    const issues = collectConsole(page);
+    // One tracker per tone, scheduled every day but today's weekday: today's check-in is a bonus (the round tone ring,
+    // polish V4), yesterday's a done fill, the days before are missed hairlines. "Open" is due today and not done
+    // (the ember "pending" outline). Same seed whatever the weekday.
+    const notToday = EVERY_DAY.filter((d) => d !== TODAY_IDX);
+    const habits: SeedHabit[] = [
+      ...TONES.map((tone, order) => ({
+        id: `heat-${tone}`,
+        name: tone.charAt(0).toUpperCase() + tone.slice(1),
+        emoji: '⭐',
+        color: tone,
+        days: notToday,
+        createdAt: daysAgo(20),
+        order,
+      })),
+      { id: 'heat-open', name: 'Open', emoji: '⭐', color: 'graphite', days: [...EVERY_DAY], createdAt: daysAgo(20), order: TONES.length },
+    ];
+    const completions: Record<string, Record<string, true>> = {};
+    for (const tone of TONES) completions[`heat-${tone}`] = { [TODAY]: true, [daysAgo(1)]: true };
+    const data = JSON.stringify({
+      version: 1,
+      state: { habits, completions, settings: { theme: 'system', installHintDismissed: true } },
+    });
+    await page.addInitScript(
+      ([key, value]) => {
+        if (!localStorage.getItem(key)) localStorage.setItem(key, value);
+      },
+      [STORAGE_KEY, data] as const,
+    );
+    await page.goto('/');
+    await openTab(page, 'Progress');
+    await expect(page.locator('.heat')).toHaveCount(TONES.length + 1);
+
+    /** The weakest ratio per state and tone, for the report. */
+    const weakest = (marks: HeatContrast[]): Record<string, number> => {
+      const out: Record<string, number> = {};
+      for (const m of marks) {
+        const key = `${m.state} ${m.tone}`;
+        out[key] = Math.min(out[key] ?? Infinity, m.ratio);
+      }
+      return out;
+    };
+    const report: Record<string, Record<string, number>> = {};
+    for (const theme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme: theme });
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      const marks = await expectHeatmapMarkContrast(page, `Progress heatmaps (${theme})`, ['done', 'bonus', 'missed', 'pending']);
+      expect(marks.filter((m) => m.state === 'bonus').length, `${theme}: a bonus ring per tone`).toBeGreaterThanOrEqual(TONES.length);
+      expect(marks.some((m) => m.state === 'pending'), `${theme}: the open tracker's pending outline`).toBe(true);
+      report[theme] = weakest(marks);
+    }
+    await testInfo.attach('heatmap-mark-contrast.json', { body: JSON.stringify(report, null, 2), contentType: 'application/json' });
     expect(issues).toEqual([]);
   });
 

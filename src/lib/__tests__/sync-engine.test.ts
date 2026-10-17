@@ -47,6 +47,8 @@ const fake = vi.hoisted(() => {
     gate: null as { promise: Promise<void>; open: () => void } | null,
     loadError: null as unknown,
     getDocsError: null as unknown,
+    /** A step of "Delete cloud data" that never answers (a stalled connection). */
+    hang: null as 'waitForPendingWrites' | 'getDocsFromServer' | null,
   };
 
   const isPlain = (v: unknown): v is Data => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -168,11 +170,13 @@ const fake = vi.hoisted(() => {
     },
     deleteField: () => DELETE,
     serverTimestamp: () => TIMESTAMP,
-    waitForPendingWrites: () => Promise.resolve(),
-    getDocsFromServer: (ref: Ref) =>
-      state.getDocsError
+    waitForPendingWrites: () => (state.hang === 'waitForPendingWrites' ? new Promise<void>(() => {}) : Promise.resolve()),
+    getDocsFromServer: (ref: Ref) => {
+      if (state.hang === 'getDocsFromServer') return new Promise<never>(() => {});
+      return state.getDocsError
         ? Promise.reject(state.getDocsError instanceof Error ? state.getDocsError : new Error(String(state.getDocsError)))
-        : Promise.resolve(snapshotFor(ref.path, { fromCache: false, hasPendingWrites: false })),
+        : Promise.resolve(snapshotFor(ref.path, { fromCache: false, hasPendingWrites: false }));
+    },
   };
 
   const handles = { app: {}, auth: {}, db: {}, sdk: { app: {}, auth: {}, firestore } };
@@ -195,6 +199,12 @@ const fake = vi.hoisted(() => {
      */
     emit: (metadata: Meta, pendingIds: readonly string[] = []): void => {
       for (const listener of [...state.listeners]) listener.next(snapshotFor(listener.path, metadata, pendingIds));
+    },
+    /** Deliver one collection only (its snapshot arriving before the other collection's). */
+    emitTo: (path: string, metadata: Meta, pendingIds: readonly string[] = []): void => {
+      for (const listener of [...state.listeners]) {
+        if (listener.path === path) listener.next(snapshotFor(listener.path, metadata, pendingIds));
+      }
     },
     /** Fail every listener the way Firestore does for a terminal error. */
     fail: (error: unknown): void => {
@@ -228,6 +238,7 @@ const fake = vi.hoisted(() => {
       state.gate = null;
       state.loadError = null;
       state.getDocsError = null;
+      state.hang = null;
     },
   };
 });
@@ -238,14 +249,16 @@ vi.mock('../sync/firebase', () => ({
 }));
 
 import useStore from '../store';
-import { clearBaseline, readBaseline } from '../sync/baseline';
-import { deleteCloudData, startSync, stopSync } from '../sync/engine';
+import { BASELINE_KEY_PREFIX, clearBaseline, hasSyncSession, readBaseline, setSyncSession } from '../sync/baseline';
+import { CONFIRM_TIMEOUT_MS, DELETE_STEP_TIMEOUT_MS, deleteCloudData, startSync, stopSync } from '../sync/engine';
 import { initialSyncState, useSyncStore } from '../sync/syncStore';
-import type { Habit, Weekday } from '../types';
+import type { Habit, Task, Weekday } from '../types';
 
 const UID = 'owner-1';
 const PATH = `users/${UID}/habits`;
+const TASKS_PATH = `users/${UID}/tasks`;
 const EVERY_DAY: Weekday[] = [0, 1, 2, 3, 4, 5, 6];
+const EMPTY_TASKS = { tasks: [], deletedTaskIds: [] };
 
 const habit = (id: string, over: Partial<Habit> = {}): Habit => ({
   id,
@@ -274,7 +287,29 @@ function seedDoc(h: Habit, extra: { completions?: Record<string, true>; deleted?
 }
 
 const cloudDoc = (id: string): Record<string, unknown> | undefined => fake.state.docs.get(`${PATH}/${id}`);
+
+const task = (id: string, over: Partial<Task> = {}): Task => ({
+  id,
+  title: `Task ${id}`,
+  date: '2026-10-20',
+  done: false,
+  createdAt: '2026-10-17',
+  ...over,
+});
+
+/** A task document as the engine writes it (note/time/doneAt absent unless given). */
+function seedTaskDoc(t: Task, extra: { deleted?: boolean } = {}): void {
+  const { note, time, doneAt, ...rest } = t;
+  const data: Record<string, unknown> = { ...rest, deleted: extra.deleted ?? false, updatedAt: { ...fake.SERVER_TIME } };
+  if (note !== undefined) data.note = note;
+  if (time !== undefined) data.time = time;
+  if (doneAt !== undefined) data.doneAt = doneAt;
+  fake.state.docs.set(`${TASKS_PATH}/${t.id}`, data);
+}
+
+const cloudTask = (id: string): Record<string, unknown> | undefined => fake.state.docs.get(`${TASKS_PATH}/${id}`);
 const store = () => useStore.getState();
+const taskIds = (): string[] => store().tasks.map((t) => t.id);
 const sync = () => useSyncStore.getState();
 const ops = () => fake.state.batches.flat();
 const serverSnapshot = (): void => fake.emit({ fromCache: false, hasPendingWrites: false });
@@ -301,6 +336,44 @@ const setHabitOp = (h: Habit) => ({
   },
 });
 
+/** SPEC §14.8: the setTask write, absent note/time/doneAt as deletes, never `deleted`. */
+const setTaskOp = (t: Task) => ({
+  kind: 'set',
+  path: `${TASKS_PATH}/${t.id}`,
+  merge: true,
+  data: {
+    id: t.id,
+    title: t.title,
+    note: t.note ?? fake.DELETE,
+    date: t.date,
+    time: t.time ?? fake.DELETE,
+    done: t.done,
+    doneAt: t.doneAt ?? fake.DELETE,
+    createdAt: t.createdAt,
+    updatedAt: fake.TIMESTAMP,
+  },
+});
+const tombstoneOp = (path: string) => ({ kind: 'set', path, merge: true, data: { deleted: true, updatedAt: fake.TIMESTAMP } });
+
+/** A stand-in for `globalThis.localStorage` (absent under node), for tests that plant a raw baseline record. */
+function fakeLocalStorage(): Storage {
+  const mem = new Map<string, string>();
+  return {
+    get length() {
+      return mem.size;
+    },
+    key: (i: number) => [...mem.keys()][i] ?? null,
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      mem.set(k, v);
+    },
+    removeItem: (k: string) => {
+      mem.delete(k);
+    },
+    clear: () => mem.clear(),
+  };
+}
+
 let warn: ReturnType<typeof vi.spyOn>;
 let error: ReturnType<typeof vi.spyOn>;
 
@@ -316,11 +389,14 @@ afterEach(() => {
   stopSync();
   warn.mockRestore();
   error.mockRestore();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
-/** A session that has heard from the server once, with the given cloud trackers. */
-async function startConfirmed(cloud: Habit[] = []): Promise<void> {
+/** A session that has heard from the server once on both collections, with the given cloud trackers and tasks. */
+async function startConfirmed(cloud: Habit[] = [], cloudTasks: Task[] = []): Promise<void> {
   for (const h of cloud) seedDoc(h);
+  for (const t of cloudTasks) seedTaskDoc(t);
   await startSync(UID);
   serverSnapshot();
   await flush();
@@ -331,7 +407,7 @@ describe('startSync / status', () => {
   it('is connecting until the server answers, synced after, offline for later cache snapshots', async () => {
     await startSync(UID);
     expect(sync().status).toBe('connecting');
-    expect(fake.state.listeners.size).toBe(1);
+    expect(fake.state.listeners.size).toBe(2);
 
     cacheSnapshot(); // the cache answers first even when online
     expect(sync().status).toBe('connecting');
@@ -354,11 +430,11 @@ describe('startSync / status', () => {
     await startSync(UID);
     const first = [...fake.state.listeners][0];
     await startSync(UID);
-    expect(fake.state.listeners.size).toBe(1);
+    expect(fake.state.listeners.size).toBe(2);
     expect([...fake.state.listeners][0]).toBe(first);
     await startSync('owner-2');
-    expect(fake.state.listeners.size).toBe(1);
-    expect([...fake.state.listeners][0]?.path).toBe('users/owner-2/habits');
+    expect(fake.state.listeners.size).toBe(2);
+    expect([...fake.state.listeners].map((l) => l.path).sort()).toEqual(['users/owner-2/habits', 'users/owner-2/tasks']);
   });
 
   it('reports a friendly error when the SDK cannot be loaded, and attaches nothing', async () => {
@@ -368,6 +444,63 @@ describe('startSync / status', () => {
     expect(sync().error).toMatch(/could not start/i);
     expect(fake.state.listeners.size).toBe(0);
     expect(error).toHaveBeenCalled();
+  });
+});
+
+describe('confirm timeout (no server snapshot yet)', () => {
+  it('stays connecting until CONFIRM_TIMEOUT_MS, then reports offline; later cache snapshots keep it offline until the server answers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    useStore.setState({ habits: [habit('a')] });
+    await startSync(UID);
+    cacheSnapshot(); // the cache answers, the server does not
+    expect(sync().status).toBe('connecting');
+    await vi.advanceTimersByTimeAsync(CONFIRM_TIMEOUT_MS - 1);
+    expect(sync().status).toBe('connecting');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sync().status).toBe('offline');
+
+    cacheSnapshot();
+    expect(sync().status).toBe('offline');
+    store().toggleCompletion('a', '2026-10-05'); // an edit meanwhile is handed to Firestore's queue…
+    expect(ops()).toEqual([{ kind: 'set', path: `${PATH}/a`, merge: true, data: { completions: { '2026-10-05': true } } }]);
+    await vi.advanceTimersByTimeAsync(0); // the hand-over settles
+    fake.emit({ fromCache: true, hasPendingWrites: true }); // …and its latency-compensated echo is still offline
+    expect(sync().status).toBe('offline');
+    expect(sync().pending).toBe(true);
+    expect(store().completions).toEqual({ a: { '2026-10-05': true } }); // local data intact
+
+    serverSnapshot(); // the connection comes back
+    expect(sync().status).toBe('synced');
+    expect(sync().pending).toBe(false);
+    expect(cloudDoc('a')).toMatchObject({ completions: { '2026-10-05': true } });
+  });
+
+  it('a lone server snapshot after the timeout reads connecting until the other collection answers too', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await startSync(UID);
+    await vi.advanceTimersByTimeAsync(CONFIRM_TIMEOUT_MS);
+    expect(sync().status).toBe('offline');
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false });
+    expect(sync().status).toBe('connecting');
+    fake.emitTo(TASKS_PATH, { fromCache: true, hasPendingWrites: false });
+    expect(sync().status).toBe('offline'); // the timer has spoken: a cache view of the other collection is offline
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(sync().status).toBe('synced');
+  });
+
+  it('does not fire once both collections have answered, nor after stopSync', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await startSync(UID);
+    serverSnapshot();
+    await vi.advanceTimersByTimeAsync(CONFIRM_TIMEOUT_MS);
+    expect(sync().status).toBe('synced');
+
+    stopSync();
+    useSyncStore.setState({ status: 'connecting' });
+    await startSync(UID);
+    stopSync();
+    await vi.advanceTimersByTimeAsync(CONFIRM_TIMEOUT_MS);
+    expect(sync().status).toBe('connecting'); // the stopped session's timer was cleared
   });
 });
 
@@ -420,7 +553,7 @@ describe('first contact', () => {
     expect(fake.state.listeners.size).toBe(0);
     fake.openGate();
     await started;
-    expect(fake.state.listeners.size).toBe(1);
+    expect(fake.state.listeners.size).toBe(2);
     expect(fake.state.batches).toEqual([]); // nothing is pushed before the first snapshot
 
     serverSnapshot();
@@ -612,7 +745,12 @@ describe('relaunch with a saved baseline', () => {
 
   it('the baseline follows acknowledged server views only and is forgotten by deleteCloudData', async () => {
     await startConfirmed([habit('a')]);
-    expect(readBaseline(UID)).toEqual({ data: { habits: [habit('a')], completions: {}, deletedIds: [] }, acked: ['a'] });
+    expect(readBaseline(UID)).toEqual({
+      data: { habits: [habit('a')], completions: {}, deletedIds: [] },
+      acked: ['a'],
+      tasks: EMPTY_TASKS,
+      ackedTasks: [],
+    });
     fake.state.manualCommits = true;
     store().toggleCompletion('a', '2026-10-05');
     echoSnapshot();
@@ -923,7 +1061,7 @@ describe('cloud changes → store', () => {
     fake.state.docs.set(`${PATH}/a`, { completions: { '2026-10-05': true } });
     fake.emit({ fromCache: false, hasPendingWrites: true }, ['a']);
     expect(store().habits.map((h) => h.id)).toEqual(['a', 'b', 'c']);
-    expect(fake.state.listeners.size).toBe(1);
+    expect(fake.state.listeners.size).toBe(2);
 
     // …and once it lands, the view (a alone, as the merge-set wrote it) shows b and c vanished.
     fake.settleCommits();
@@ -969,7 +1107,7 @@ describe('cloud changes → store', () => {
     store().toggleCompletion('a', '2026-10-05');
     fake.emit({ fromCache: false, hasPendingWrites: true }, ['a']); // the echo: every document pending
     expect(sync().status).toBe('synced');
-    expect(fake.state.listeners.size).toBe(1);
+    expect(fake.state.listeners.size).toBe(2);
   });
 
   it('an account whose cloud was always empty is not mistaken for a wipe', async () => {
@@ -979,7 +1117,7 @@ describe('cloud changes → store', () => {
     serverSnapshot();
     expect(sync().status).toBe('synced');
     expect(store().deletedIds).toEqual(['never-synced']);
-    expect(fake.state.listeners.size).toBe(1);
+    expect(fake.state.listeners.size).toBe(2);
   });
 
   it('a terminal listener error tears everything down with a friendly message', async () => {
@@ -1062,7 +1200,7 @@ describe('deleteCloudData', () => {
     expect(fake.state.docs.size).toBe(1);
     expect(store().habits).toHaveLength(1);
     await flush();
-    expect(fake.state.listeners.size).toBe(1); // restarted
+    expect(fake.state.listeners.size).toBe(2); // restarted
     expect(sync().status).toBe('connecting');
     expect(warn).toHaveBeenCalled();
   });
@@ -1088,5 +1226,550 @@ describe('deleteCloudData', () => {
     await deleteCloudData(UID);
     expect(fake.state.docs.size).toBe(0);
     expect(fake.state.listeners.size).toBe(0);
+  });
+
+  it.each(['waitForPendingWrites', 'getDocsFromServer'] as const)(
+    'a step that never answers (%s) gives up after DELETE_STEP_TIMEOUT_MS with the friendly sentence, and syncing resumes',
+    async (step) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      seedDoc(habit('a'));
+      await startSync(UID);
+      serverSnapshot();
+      fake.state.batches = [];
+      fake.state.hang = step;
+
+      let outcome: unknown = null;
+      const deleting = deleteCloudData(UID).then(
+        () => 'resolved',
+        (e: unknown) => {
+          outcome = e;
+          return 'rejected';
+        },
+      );
+      await vi.advanceTimersByTimeAsync(DELETE_STEP_TIMEOUT_MS - 1);
+      expect(outcome).toBeNull(); // still "Deleting…"
+      expect(fake.state.listeners.size).toBe(0); // the mirror is detached meanwhile
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await deleting).toBe('rejected');
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toBe('Could not reach the cloud to delete your data. Check your connection and try again.');
+      expect(fake.state.docs.size).toBe(1); // nothing was deleted
+      expect(fake.state.batches).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(0); // the restarted engine attaches its listeners
+      expect(fake.state.listeners.size).toBe(2);
+      expect(sync().status).toBe('connecting');
+      serverSnapshot();
+      expect(sync().status).toBe('synced');
+    },
+  );
+
+  it('a complete sweep forgets the sync session; a failed one leaves it', async () => {
+    setSyncSession(true);
+    await startConfirmed([habit('a')]);
+    fake.state.getDocsError = Object.assign(new Error('unavailable'), { code: 'unavailable' });
+    await expect(deleteCloudData(UID)).rejects.toThrow(/Could not reach the cloud/);
+    expect(hasSyncSession()).toBe(true);
+    fake.state.getDocsError = null;
+    await deleteCloudData(UID);
+    expect(hasSyncSession()).toBe(false);
+  });
+});
+
+describe('tasks channel (SPEC §14.8)', () => {
+  it('listens to users/{uid}/tasks beside habits and stays connecting until both collections are server-confirmed', async () => {
+    await startSync(UID);
+    expect([...fake.state.listeners].map((l) => l.path).sort()).toEqual([PATH, TASKS_PATH]);
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false });
+    expect(sync().status).toBe('connecting');
+    expect(sync().lastSyncedAt).toBeNull();
+    fake.emitTo(TASKS_PATH, { fromCache: true, hasPendingWrites: false }); // the cache answers first
+    expect(sync().status).toBe('connecting');
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(sync().status).toBe('synced');
+    expect(sync().lastSyncedAt).toBeTypeOf('number');
+  });
+
+  it('pending is true while either collection has writes waiting', async () => {
+    await startConfirmed();
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: true });
+    expect(sync().pending).toBe(true);
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false }); // habits settled, tasks still waiting
+    expect(sync().pending).toBe(true);
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(sync().pending).toBe(false);
+  });
+
+  it('first contact uploads local-only tasks (absent fields as deletes), adopts cloud tasks, remote fields win, a done side wins, tombstones win', async () => {
+    const b = task('b', { time: '15:00', note: 'bring the form' });
+    const c = task('c', { done: true, doneAt: '2026-10-18' });
+    useStore.setState({ tasks: [task('a', { title: 'local title' }), b, c], deletedTaskIds: ['e'] });
+    seedTaskDoc(task('a', { title: 'cloud title' }));
+    seedTaskDoc(task('c'));
+    seedTaskDoc(task('d'), { deleted: true }); // a tombstone this device learns about
+    seedTaskDoc(task('e'));
+    seedTaskDoc(task('f', { date: '2026-10-19' }));
+
+    await startSync(UID);
+    serverSnapshot();
+
+    expect(taskIds()).toEqual(['f', 'b', 'a', 'c']); // compareTasks order: date, timed first, then createdAt, id
+    const byId = new Map(store().tasks.map((t) => [t.id, t] as const));
+    expect(byId.get('a')).toEqual(task('a', { title: 'cloud title' }));
+    expect(byId.get('b')).toEqual(b);
+    expect(byId.get('c')).toEqual(c);
+    expect(new Set(store().deletedTaskIds)).toEqual(new Set(['d', 'e']));
+
+    expect(ops()).toEqual([setTaskOp(b), setTaskOp(c), tombstoneOp(`${TASKS_PATH}/e`)]);
+    expect(cloudTask('b')).toEqual({ ...b, updatedAt: fake.SERVER_TIME });
+    expect(cloudTask('b')).not.toHaveProperty('deleted');
+    expect(cloudTask('b')).not.toHaveProperty('doneAt');
+    expect(cloudTask('c')).toMatchObject({ done: true, doneAt: '2026-10-18' });
+    expect(cloudTask('e')).toMatchObject({ deleted: true, title: 'Task e' });
+    serverSnapshot();
+    expect(ops()).toHaveLength(3); // the echo pushes nothing
+  });
+
+  it('a cloud task arrives through applyRemoteTasks inside the loop guard: applied once, nothing pushed back', async () => {
+    await startConfirmed();
+    const apply = vi.spyOn(store(), 'applyRemoteTasks');
+    let changes = 0;
+    const unsubscribe = useStore.subscribe(() => {
+      changes += 1;
+    });
+    try {
+      seedTaskDoc(task('r', { time: '09:30' }));
+      serverSnapshot();
+      serverSnapshot();
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(apply).toHaveBeenCalledWith({ tasks: [task('r', { time: '09:30' })], deletedTaskIds: [] });
+    } finally {
+      unsubscribe();
+      apply.mockRestore();
+    }
+    expect(store().tasks).toEqual([task('r', { time: '09:30' })]);
+    expect(changes).toBe(1); // the second, equal snapshot did not even set()
+    expect(ops()).toEqual([]);
+  });
+
+  it('a check-off goes up as setTask with doneAt; un-checking clears doneAt with deleteField; clearing note/time deletes them; deleting tombstones', async () => {
+    const t = task('a', { note: 'n', time: '08:00' });
+    await startConfirmed([], [t]);
+
+    store().setTaskDone('a', true, '2026-10-21');
+    expect(ops()).toEqual([setTaskOp({ ...t, done: true, doneAt: '2026-10-21' })]);
+    expect(cloudTask('a')).toMatchObject({ done: true, doneAt: '2026-10-21' });
+    echoSnapshot();
+    serverSnapshot();
+    expect(ops()).toHaveLength(1); // the echo does not re-push
+
+    store().setTaskDone('a', false);
+    expect(ops()[1]).toEqual(setTaskOp(t));
+    expect(cloudTask('a')).not.toHaveProperty('doneAt');
+    expect(cloudTask('a')?.done).toBe(false);
+
+    store().updateTask('a', { note: '', time: '' });
+    expect(ops()[2]).toEqual(setTaskOp(task('a')));
+    expect(cloudTask('a')).not.toHaveProperty('note');
+    expect(cloudTask('a')).not.toHaveProperty('time');
+
+    store().deleteTask('a');
+    expect(ops()[3]).toEqual(tombstoneOp(`${TASKS_PATH}/a`));
+    expect(cloudTask('a')).toMatchObject({ deleted: true, title: 'Task a' }); // a tombstone keeps its fields
+    expect(store().deletedTaskIds).toEqual(['a']);
+    expect(ops()).toHaveLength(4);
+    serverSnapshot();
+    expect(store().tasks).toEqual([]);
+    expect(ops()).toHaveLength(4);
+  });
+
+  it('habit and task ops of one store change share one batch', async () => {
+    await startConfirmed([habit('h')]);
+    // One set() touching both slices, as importData does.
+    useStore.setState({ habits: [habit('h', { name: 'Renamed' })], tasks: [task('t')] });
+    expect(fake.state.batches).toHaveLength(1);
+    expect(fake.state.batches[0]).toEqual([setHabitOp(habit('h', { name: 'Renamed' })), setTaskOp(task('t'))]);
+    serverSnapshot();
+    expect(fake.state.batches).toHaveLength(1);
+  });
+
+  it('a rejected mixed batch rolls both sides back: both edits survive the rollback snapshot and go up again with the next change', async () => {
+    await startConfirmed([habit('h')], [task('t')]);
+    fake.state.manualCommits = true;
+    useStore.setState({ completions: { h: { '2026-10-05': true } }, tasks: [task('t', { done: true, doneAt: '2026-10-20' })] });
+    expect(fake.state.batches).toHaveLength(1);
+    expect(fake.state.batches[0]).toHaveLength(2);
+    fake.rejectCommits(Object.assign(new Error('denied'), { code: 'permission-denied' }));
+    await flush();
+    expect(sync().status).toBe('error');
+
+    serverSnapshot(); // the SDK's rollback view: neither edit is in the cloud
+    expect(store().completions.h).toEqual({ '2026-10-05': true });
+    expect(store().tasks[0]).toMatchObject({ done: true, doneAt: '2026-10-20' });
+    expect(fake.state.batches).toHaveLength(1); // a final code: no automatic re-send
+
+    const later = store().addTask({ title: 'Later', date: '2026-10-22', createdAt: '2026-10-17' });
+    expect(fake.state.batches).toHaveLength(2);
+    expect(fake.state.batches[1]).toEqual([
+      { kind: 'set', path: `${PATH}/h`, merge: true, data: { completions: { '2026-10-05': true } } },
+      setTaskOp(task('t', { done: true, doneAt: '2026-10-20' })),
+      setTaskOp(later),
+    ]);
+    fake.settleCommits();
+    await flush();
+    expect(cloudDoc('h')?.completions).toEqual({ '2026-10-05': true });
+    expect(cloudTask('t')).toMatchObject({ done: true, doneAt: '2026-10-20' });
+    expect(cloudTask(later.id)).toMatchObject({ title: 'Later' });
+    serverSnapshot();
+    expect(sync().status).toBe('synced');
+    expect(fake.state.batches).toHaveLength(2);
+  });
+
+  it('a snapshot of one collection is not held back by a batch in flight on the other', async () => {
+    await startConfirmed([habit('h')], [task('a')]);
+    fake.state.manualCommits = true;
+    store().toggleTask('a', '2026-10-20'); // a tasks batch in flight
+    fake.state.docs.set(`${PATH}/h`, { ...cloudDoc('h'), name: 'Renamed elsewhere' });
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false });
+    expect(store().habits[0]?.name).toBe('Renamed elsewhere'); // applied: that batch cannot date this view
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false }); // predates the tap: skipped
+    expect(store().tasks[0]?.done).toBe(true);
+
+    fake.settleCommits();
+    await flush();
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(store().tasks[0]?.done).toBe(true);
+    expect(cloudTask('a')?.done).toBe(true);
+    expect(fake.state.batches).toHaveLength(1);
+  });
+
+  it('the saved baseline carries the tasks side; an un-check made elsewhere while closed sticks, an edit made here while closed is pushed', async () => {
+    const done = task('a', { done: true, doneAt: '2026-10-18' });
+    await startConfirmed([], [done, task('b')]);
+    expect(readBaseline(UID)).toEqual({
+      data: { habits: [], completions: {}, deletedIds: [] },
+      acked: [],
+      tasks: { tasks: [done, task('b')], deletedTaskIds: [] },
+      ackedTasks: ['a', 'b'],
+    });
+    stopSync(); // the phone is closed
+
+    const unchecked: Record<string, unknown> = { ...cloudTask('a'), done: false };
+    delete unchecked.doneAt;
+    fake.state.docs.set(`${TASKS_PATH}/a`, unchecked); // the laptop un-checks it…
+    store().updateTask('b', { title: 'Edited while closed', time: '07:30' }); // …while this device edits another
+
+    await startSync(UID);
+    fake.state.docs.delete(`${TASKS_PATH}/b`); // a memory cache answers with a partial view first…
+    cacheSnapshot();
+    expect(taskIds()).toEqual(['a', 'b']); // …and is left alone (the store's own order, untouched)
+    expect(store().tasks.find((t) => t.id === 'a')?.done).toBe(true);
+    expect(ops()).toEqual([]);
+    expect(sync().status).toBe('connecting');
+
+    seedTaskDoc(task('b'));
+    serverSnapshot();
+    const edited = task('b', { title: 'Edited while closed', time: '07:30' });
+    expect(store().tasks).toEqual([edited, task('a')]);
+    expect(ops()).toEqual([setTaskOp(edited)]);
+    expect(readBaseline(UID)?.tasks.tasks).toEqual([task('a'), task('b')]); // the server's view before the push
+    await flush(); // the commit settles before the view that includes it arrives
+    serverSnapshot();
+    expect(ops()).toHaveLength(1);
+    expect(readBaseline(UID)?.tasks.tasks).toEqual([edited, task('a')]);
+  });
+
+  it('a task created here while closed is uploaded, one created elsewhere arrives, a deletion here is pushed, a deletion elsewhere sticks', async () => {
+    await startConfirmed([], [task('a'), task('d'), task('g')]);
+    stopSync();
+    const added = store().addTask({ title: 'New here', date: '2026-10-23', time: '18:00', createdAt: '2026-10-17' });
+    store().deleteTask('d');
+    store().setTaskDone('g', true, '2026-10-20'); // checked here…
+    fake.state.docs.set(`${TASKS_PATH}/g`, { ...cloudTask('g'), deleted: true }); // …deleted elsewhere: the tombstone wins
+    seedTaskDoc(task('c', { date: '2026-10-21' }));
+
+    await startSync(UID);
+    serverSnapshot();
+    expect(taskIds()).toEqual(['a', 'c', added.id]);
+    expect(new Set(store().deletedTaskIds)).toEqual(new Set(['d', 'g']));
+    expect(ops()).toEqual([setTaskOp(added), tombstoneOp(`${TASKS_PATH}/d`)]);
+    expect(cloudTask('d')?.deleted).toBe(true);
+  });
+
+  it('a v1 baseline (saved before tasks existed) reads with an empty tasks side: local tasks go up, cloud tasks come down', async () => {
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    local.setItem(
+      `${BASELINE_KEY_PREFIX}${UID}`,
+      JSON.stringify({ v: 1, data: { habits: [habit('h')], completions: {}, deletedIds: [] }, acked: ['h'] }),
+    );
+    seedDoc(habit('h'));
+    seedTaskDoc(task('cloud'));
+    useStore.setState({ habits: [habit('h')], tasks: [task('mine')] });
+
+    await startSync(UID);
+    fake.state.docs.clear();
+    cacheSnapshot(); // an empty cache view before the server: left alone on both collections
+    expect(store().habits).toHaveLength(1);
+    expect(taskIds()).toEqual(['mine']);
+    expect(ops()).toEqual([]);
+
+    seedDoc(habit('h'));
+    seedTaskDoc(task('cloud'));
+    serverSnapshot();
+    expect(taskIds()).toEqual(['cloud', 'mine']);
+    expect(ops()).toEqual([setTaskOp(task('mine'))]);
+    expect(sync().status).toBe('synced');
+    const saved = readBaseline(UID);
+    expect(saved?.acked).toEqual(['h']);
+    expect(saved?.ackedTasks).toEqual(['cloud']);
+    expect(saved?.tasks.tasks).toEqual([task('cloud')]);
+    expect(JSON.parse(local.getItem(`${BASELINE_KEY_PREFIX}${UID}`) ?? '{}')).toMatchObject({ v: 2 });
+  });
+
+  it('the baseline is saved only once both collections are acknowledged', async () => {
+    await startConfirmed([habit('h')], [task('a')]);
+    const before = readBaseline(UID);
+    fake.state.docs.set(`${TASKS_PATH}/a`, { ...cloudTask('a'), done: true, doneAt: '2026-10-20' });
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: true }); // a view with writes the server has not acknowledged
+    expect(store().tasks[0]?.done).toBe(true);
+    seedDoc(habit('n', { order: 1 }));
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false });
+    expect(store().habits.map((h) => h.id)).toEqual(['h', 'n']);
+    expect(readBaseline(UID)).toEqual(before); // tasks not acknowledged yet: nothing saved
+
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    const saved = readBaseline(UID);
+    expect(saved?.data.habits.map((h) => h.id)).toEqual(['h', 'n']);
+    expect(saved?.tasks.tasks[0]).toMatchObject({ id: 'a', done: true, doneAt: '2026-10-20' });
+  });
+
+  it('a local task the cloud tombstoned, which this device never deleted, is restored under a new id', async () => {
+    useStore.setState({ tasks: [task('x', { title: 'Renew membership' })] });
+    seedTaskDoc(task('x'), { deleted: true });
+    await startSync(UID);
+    serverSnapshot();
+    const restored = store().tasks[0] as Task;
+    expect(restored.title).toBe('Renew membership');
+    expect(restored.id).not.toBe('x');
+    expect(store().deletedTaskIds).toEqual(['x']);
+    expect(ops()).toEqual([setTaskOp(restored)]);
+    serverSnapshot();
+    expect(ops()).toHaveLength(1);
+    expect(store().tasks).toHaveLength(1);
+  });
+
+  it('keeps a task tombstone the cloud has never seen, and pushes it when the cloud shows the task live', async () => {
+    useStore.setState({ deletedTaskIds: ['x'] });
+    await startConfirmed([], [task('a')]);
+    serverSnapshot();
+    expect(store().deletedTaskIds).toEqual(['x']);
+    expect(ops()).toEqual([]);
+    seedTaskDoc(task('x')); // a device that was offline when x was deleted pushes it
+    serverSnapshot();
+    expect(taskIds()).toEqual(['a']);
+    expect(ops()).toEqual([tombstoneOp(`${TASKS_PATH}/x`)]);
+    expect(cloudTask('x')?.deleted).toBe(true);
+  });
+
+  it('a tasks collection emptied elsewhere pauses sync and keeps the local copy of both collections', async () => {
+    await startConfirmed([habit('h')], [task('a'), task('b')]);
+    fake.state.docs.delete(`${TASKS_PATH}/a`);
+    fake.state.docs.delete(`${TASKS_PATH}/b`);
+    serverSnapshot();
+    expect(taskIds()).toEqual(['a', 'b']);
+    expect(store().habits).toHaveLength(1);
+    expect(sync().status).toBe('error');
+    expect(sync().error).toMatch(/deleted from another device/);
+    expect(fake.state.listeners.size).toBe(0);
+    store().toggleTask('a', '2026-10-20');
+    expect(ops()).toEqual([]);
+  });
+
+  it('an unusable task document is dropped and a bare tombstone kept, without crashing the snapshot', async () => {
+    await startConfirmed([], [task('a')]);
+    fake.state.docs.set(`${TASKS_PATH}/junk`, { title: 42 });
+    fake.state.docs.set(`${TASKS_PATH}/gone`, { deleted: true, updatedAt: null });
+    serverSnapshot();
+    expect(taskIds()).toEqual(['a']);
+    expect(store().deletedTaskIds).toEqual(['gone']);
+    expect(sync().status).toBe('synced');
+  });
+
+  it('a task write whose id cannot be a document path is reported, the rest is sent, and the task is never claimed as synced', async () => {
+    await startConfirmed();
+    useStore.setState({ tasks: [task('bad/id'), task('ok')] });
+    expect(ops()).toEqual([setTaskOp(task('ok'))]);
+    expect(sync().status).toBe('error');
+    expect(sync().error).toMatch(/One task could not be saved/);
+    serverSnapshot();
+    expect(taskIds()).toEqual(['bad/id', 'ok']); // kept on the device
+    expect(sync().status).toBe('error');
+  });
+
+  it('deleteCloudData sweeps both collections, clears the baseline and leaves the store alone', async () => {
+    await startConfirmed([habit('h')], [task('a'), task('b')]);
+    await deleteCloudData(UID);
+    expect(fake.state.docs.size).toBe(0);
+    expect(fake.state.batches.flat().map((op) => [op.kind, op.path])).toEqual([
+      ['delete', `${PATH}/h`],
+      ['delete', `${TASKS_PATH}/a`],
+      ['delete', `${TASKS_PATH}/b`],
+    ]);
+    expect(store().habits).toHaveLength(1);
+    expect(store().tasks).toHaveLength(2);
+    expect(readBaseline(UID)).toBeNull();
+    expect(fake.state.listeners.size).toBe(0);
+  });
+
+  it('stopSync tears both listeners down', async () => {
+    await startConfirmed([], [task('a')]);
+    expect(fake.state.listeners.size).toBe(2);
+    stopSync();
+    expect(fake.state.listeners.size).toBe(0);
+    store().toggleTask('a', '2026-10-20');
+    expect(ops()).toEqual([]);
+    expect(store().tasks[0]?.done).toBe(true); // local still works
+  });
+});
+
+describe('a rejected batch and the other collection (SPEC §14.8)', () => {
+  const denied = (): Error => Object.assign(new Error('denied'), { code: 'permission-denied' });
+  const aborted = (): Error => Object.assign(new Error('aborted'), { code: 'aborted' });
+  const liveTaskTitles = (): unknown[] =>
+    [...fake.state.docs.entries()]
+      .filter(([path, doc]) => path.startsWith(`${TASKS_PATH}/`) && doc.deleted !== true)
+      .map(([, doc]) => doc.title);
+
+  it('a rejected habits-only batch leaves the tasks side alone: a task renamed elsewhere meanwhile follows the cloud and is never pushed back', async () => {
+    await startConfirmed([habit('h')], [task('x', { title: 'a' })]);
+    fake.state.manualCommits = true;
+    store().updateHabit('h', { name: 'Renamed' }); // a habits-only batch in flight
+    expect(fake.state.batches).toHaveLength(1);
+
+    // Renamed on another device: the batch writes no task, so this view is applied at once.
+    fake.state.docs.set(`${TASKS_PATH}/x`, { ...cloudTask('x'), title: 'b' });
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(store().tasks[0]?.title).toBe('b');
+
+    fake.rejectCommits(denied());
+    await flush();
+
+    // Renamed again elsewhere. No task was edited here, so this device simply follows the cloud.
+    fake.state.docs.set(`${TASKS_PATH}/x`, { ...cloudTask('x'), title: 'c' });
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(store().tasks[0]?.title).toBe('c');
+    expect(fake.state.batches).toHaveLength(1);
+
+    // The owner's next change re-sends the rejected tracker edit, and nothing for the task.
+    fake.state.manualCommits = false;
+    store().toggleCompletion('h', '2026-10-05');
+    await flush();
+    expect(fake.state.batches).toHaveLength(2);
+    expect(fake.state.batches[1]?.every((op) => op.path.startsWith(`${PATH}/`))).toBe(true);
+    expect(cloudDoc('h')).toMatchObject({ name: 'Renamed', completions: { '2026-10-05': true } });
+    expect(cloudTask('x')?.title).toBe('c');
+  });
+
+  it('a task created and then deleted elsewhere around a rejected habits-only batch stays deleted', async () => {
+    await startConfirmed([habit('h')], [task('a')]);
+    fake.state.manualCommits = true;
+    store().updateHabit('h', { name: 'Renamed' }); // a habits-only batch in flight
+
+    seedTaskDoc(task('y', { title: 'From the laptop' })); // the laptop adds a task…
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(taskIds().sort()).toEqual(['a', 'y']);
+
+    fake.rejectCommits(denied());
+    await flush();
+
+    fake.state.docs.set(`${TASKS_PATH}/y`, { ...cloudTask('y'), deleted: true }); // …and deletes it
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false });
+    expect(taskIds()).toEqual(['a']); // known here, so not mistaken for a restored backup and re-keyed
+    expect(store().deletedTaskIds).toEqual(['y']);
+
+    fake.state.manualCommits = false;
+    store().toggleCompletion('h', '2026-10-05');
+    await flush();
+    expect(taskIds()).toEqual(['a']);
+    expect(liveTaskTitles()).toEqual(['Task a']); // no live copy under a fresh id
+  });
+
+  it('a rejected tasks-only batch leaves the habits side alone: a tracker renamed elsewhere meanwhile follows the cloud', async () => {
+    await startConfirmed([habit('h', { name: 'A' })], [task('t')]);
+    fake.state.manualCommits = true;
+    store().toggleTask('t', '2026-10-20'); // a tasks-only batch in flight
+
+    fake.state.docs.set(`${PATH}/h`, { ...cloudDoc('h'), name: 'B' });
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false });
+    expect(store().habits[0]?.name).toBe('B');
+
+    fake.rejectCommits(denied());
+    await flush();
+
+    fake.state.docs.set(`${PATH}/h`, { ...cloudDoc('h'), name: 'C' });
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false });
+    expect(store().habits[0]?.name).toBe('C');
+
+    // The owner's next change re-sends the rejected check-off, and nothing for the tracker.
+    fake.state.manualCommits = false;
+    const later = store().addTask({ title: 'Later', date: '2026-10-22', createdAt: '2026-10-17' });
+    await flush();
+    expect(fake.state.batches).toHaveLength(2);
+    expect(fake.state.batches[1]).toEqual([setTaskOp(task('t', { done: true, doneAt: '2026-10-20' })), setTaskOp(later)]);
+    expect(cloudDoc('h')?.name).toBe('C');
+  });
+
+  it('two rejected task batches with a habits snapshot in between: both edits survive the rollback view and go up again', async () => {
+    await startConfirmed([habit('h')], [task('a')]);
+    fake.state.manualCommits = true;
+    store().toggleTask('a', '2026-10-20'); // B1: checked off
+    store().updateTask('a', { title: 'Renamed' }); // B2: checked off and renamed
+    expect(fake.state.batches).toHaveLength(2);
+    const [b1, b2] = fake.state.pendingCommits.splice(0);
+    b1?.reject(denied());
+    await flush();
+
+    // Any habits view while B2 is still in flight (a tracker edited elsewhere, a metadata flip).
+    fake.emitTo(PATH, { fromCache: false, hasPendingWrites: false });
+
+    b2?.reject(denied());
+    await flush();
+
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false }); // the rollback view: neither landed
+    expect(store().tasks[0]).toMatchObject({ title: 'Renamed', done: true, doneAt: '2026-10-20' });
+
+    fake.state.manualCommits = false;
+    store().toggleCompletion('h', '2026-10-05');
+    await flush();
+    expect(cloudTask('a')).toMatchObject({ title: 'Renamed', done: true, doneAt: '2026-10-20' });
+  });
+
+  it('a batch handed over between two rejections and then rejected too never counts the first rejected edit as synced', async () => {
+    await startConfirmed([], [task('a'), task('b')]);
+    fake.state.manualCommits = true;
+    store().toggleTask('a', '2026-10-20'); // B1
+    store().updateTask('b', { title: 'B renamed' }); // B2, diffed against a state that counts B1 as landed
+    const [b1, b2] = fake.state.pendingCommits.splice(0);
+    b1?.reject(aborted());
+    await flush();
+
+    const third = store().addTask({ title: 'Third', date: '2026-10-22', createdAt: '2026-10-17' }); // B3
+    const [b3] = fake.state.pendingCommits.splice(0);
+    b2?.reject(aborted());
+    await flush();
+    b3?.reject(denied());
+    await flush();
+
+    fake.emitTo(TASKS_PATH, { fromCache: false, hasPendingWrites: false }); // none of the three landed
+    expect(store().tasks.find((t) => t.id === 'a')).toMatchObject({ done: true, doneAt: '2026-10-20' });
+    expect(store().tasks.find((t) => t.id === 'b')?.title).toBe('B renamed');
+
+    fake.state.manualCommits = false;
+    store().updateTask(third.id, { note: 'bring the form' }); // the owner's next change re-sends all of it
+    await flush();
+    expect(cloudTask('a')).toMatchObject({ done: true, doneAt: '2026-10-20' });
+    expect(cloudTask('b')?.title).toBe('B renamed');
+    expect(cloudTask(third.id)).toMatchObject({ title: 'Third', note: 'bring the form' });
   });
 });

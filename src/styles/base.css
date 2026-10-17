@@ -132,9 +132,14 @@ summary::-webkit-details-marker {
   display: none;
 }
 
+/* Keyboard focus: a 2px ember ring held off the element by a 2px paper gap (the box-shadow fills the
+   outline-offset). Against that gap the ring reads ≥3.5:1 on every surface, including the Week view's
+   today band, where ember on ember-soft alone is 2.87:1 in light. Controls with their own focus style
+   (the fields) override both properties. */
 :focus-visible {
   outline: 2px solid var(--ember);
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--surface);
 }
 
 :focus:not(:focus-visible) {
@@ -189,7 +194,7 @@ summary::-webkit-details-marker {
 }
 
 /* Small-caps labels. The brief names --ink-3; at 2.7:1 on paper it fails the 4.5:1 text bar, so
-   labels use --ink-2. --ink-3 is for non-text marks only (the unscheduled dash, hover borders). */
+   labels use --ink-2. --ink-3 is for non-text marks only (the strike on a done task, hover borders). */
 .small-caps {
   font-family: var(--font-ui);
   font-size: 11px;
@@ -244,6 +249,8 @@ summary::-webkit-details-marker {
 .tone-rose       { --tone: var(--c-rose);       --tone-soft: var(--c-rose-soft); }
 .tone-moss       { --tone: var(--c-moss);       --tone-soft: var(--c-moss-soft); }
 .tone-graphite   { --tone: var(--c-graphite);   --tone-soft: var(--c-graphite-soft); }
+/* The ember accent as a tone — the square Check on one-time tasks. */
+.tone-ember      { --tone: var(--ember);        --tone-soft: var(--ember-soft); }
 
 /* ---------- Surfaces & layout helpers ---------- */
 .card {

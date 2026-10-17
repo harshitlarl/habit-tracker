@@ -86,8 +86,11 @@
   padding-bottom: var(--s-2, 8px);
 }
 
+/* A departing panel takes no more taps (see the backdrop in Sheet.tsx): they fall through to the
+   backdrop, which ignores them until the sheet unmounts. */
 .sheet.is-closing .sheet__panel {
   animation: sheet-down 240ms ease-in forwards;
+  pointer-events: none;
 }
 
 .sheet.is-closing .sheet__backdrop {

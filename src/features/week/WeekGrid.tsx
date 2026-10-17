@@ -158,7 +158,8 @@ function WeekRow({
               value={stats.done / stats.due}
               size={20}
               stroke={3}
-              label={`${habit.name}, ${scope}: ${stats.done} of ${stats.due} done`}
+              label={`${habit.name}, ${scope}`}
+              valueText={`${stats.done} of ${stats.due} done`}
             />
             <span className="tabular" aria-hidden="true">
               {`${stats.done}/${stats.due}`}
@@ -194,6 +195,9 @@ interface WeekCellProps {
 function WeekCell({ habit, dateKey, today, done, onToggle }: WeekCellProps) {
   const [pulse, setPulse] = useState(false);
   const cell = cellModel(habit, done, dateKey, today);
+  // A toggle button like Today's Check: aria-pressed carries done / not done, so VoiceOver announces the
+  // change (a scheduled day's name stays the same across the tap). Disabled cells are not toggles.
+  const pressed = cell.disabled ? undefined : cell.state === 'done' || cell.state === 'bonus';
 
   return (
     <button
@@ -206,6 +210,7 @@ function WeekCell({ habit, dateKey, today, done, onToggle }: WeekCellProps) {
         pulse && 'is-pulse',
       )}
       aria-label={cell.label}
+      aria-pressed={pressed}
       disabled={cell.disabled}
       onClick={() => {
         if (cell.disabled) return;

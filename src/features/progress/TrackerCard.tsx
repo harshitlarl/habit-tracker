@@ -4,6 +4,7 @@ import { addDays } from '../../lib/dates';
 import { toneClass } from '../../lib/selectors';
 import { bestStreak, completionStats, currentStreak } from '../../lib/streaks';
 import { cx } from '../../components/cx';
+import { Icon } from '../../components/Icon';
 import { Heatmap } from './Heatmap';
 import { Stat } from './Stat';
 import { HEATMAP_WEEKS, buildHeatmap, percent, plural, sliceCompletions, type DateSet } from './progressStats';
@@ -18,10 +19,23 @@ export interface TrackerCardProps {
   weeks: DateKey[][];
   /** Stagger index for the entrance animation. */
   index: number;
+  /** Opens the tracker editor for this habit (the header is the button). Keep it stable: the card is memoised. */
+  onEdit: (habitId: string) => void;
 }
 
-/** One active tracker: emoji + name, three numerals and the 12-week heatmap. Memoised per habit. */
-export const TrackerCard = memo(function TrackerCard({ habit, dates, today, weeks, index }: TrackerCardProps) {
+/**
+ * One active tracker: emoji + name, three numerals and the 12-week heatmap. Memoised per habit.
+ * The header (emoji + name) opens the editor: a button laid over it, named "Edit <name>", so the
+ * name itself stays a plain heading for the card.
+ */
+export const TrackerCard = memo(function TrackerCard({
+  habit,
+  dates,
+  today,
+  weeks,
+  index,
+  onEdit,
+}: TrackerCardProps) {
   const titleId = useId();
 
   const stats = useMemo(() => {
@@ -53,6 +67,14 @@ export const TrackerCard = memo(function TrackerCard({ habit, dates, today, week
           </h3>
           {habit.note ? <p className="tracker__note muted truncate">{habit.note}</p> : null}
         </div>
+        <button
+          type="button"
+          className="tracker__edit"
+          aria-label={`Edit ${habit.name}`}
+          onClick={() => onEdit(habit.id)}
+        >
+          <Icon name="chevronRight" size={18} />
+        </button>
       </header>
 
       <div className="tracker__body">

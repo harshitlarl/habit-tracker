@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import useStore from '../../lib/store';
 import { addDays, formatWeekRange, formatWeekday, startOfWeekKey, weekKeys, weekdayOf } from '../../lib/dates';
 import { habitsActiveBetween } from '../../lib/selectors';
@@ -11,14 +11,17 @@ import { EmptyState } from '../../components/EmptyState';
 import { Icon } from '../../components/Icon';
 import { HabitEditor } from '../manage/HabitEditor';
 import { WeekGrid } from './WeekGrid';
+import { WeekTasks } from './WeekTasks';
 import { relativeWeekLabel } from './weekModel';
 import './WeekView.css';
 
 const SUNDAY = 6;
 
 /**
- * Week view: a Monday → Sunday ledger of every tracker. ‹ › move the week; a "This week" pill
- * returns to the current one. Tapping a cell toggles that day's completion.
+ * Week view: a Monday → Sunday ledger of every tracker, with the week's one-time tasks beneath it.
+ * ‹ › move the week; a "This week" pill returns to the current one. Tapping a cell toggles that
+ * day's completion. Without trackers the ledger gives way to an empty state, and the tasks section
+ * still follows the week, so a first task can be planned before the first tracker.
  */
 export function WeekView() {
   const habits = useStore((s) => s.habits);
@@ -44,34 +47,33 @@ export function WeekView() {
     setNavigated(true);
   };
 
-  if (habits.length === 0) {
-    return (
-      <section className="view" aria-labelledby="week-title">
-        <header className="view-header wk-header">
-          <div className="wk-header__text">
-            <div className="wk-eyebrow">
-              <p className="small-caps">This week</p>
-            </div>
-            <h1 id="week-title" className="display display--xl wk-title">
-              {formatWeekRange(startOfWeekKey(today))}
-            </h1>
-          </div>
-        </header>
-        <EmptyState
-          title="Nothing to track yet"
-          body="Once you add a tracker, this page becomes your week at a glance: one row per habit, a mark for every day you show up."
-          action={
-            <Button size="lg" icon={<Icon name="plus" size={20} />} onClick={() => setEditorOpen(true)}>
-              Add your first tracker
-            </Button>
-          }
-        />
-        <HabitEditor open={editorOpen} onClose={() => setEditorOpen(false)} />
-      </section>
-    );
-  }
-
+  const hasHabits = habits.length > 0;
   const showNote = offset === 0 && summary.due > 0 && weekdayOf(today) !== SUNDAY;
+
+  let ledger: ReactNode = null;
+  if (hasHabits) {
+    ledger =
+      rows.length > 0 ? (
+        <>
+          <WeekGrid
+            habits={habits}
+            rows={rows}
+            completions={completions}
+            mondayKey={mondayKey}
+            keys={keys}
+            today={today}
+            animateRows={!navigated}
+            onToggle={toggleCompletion}
+          />
+          <div className="wk-summary">
+            <p className="quote wk-summary__text">{getWeekSummaryMessage(summary.done, summary.due)}</p>
+            {showNote ? <p className="small-caps wk-summary__note">Through {formatWeekday(today)}</p> : null}
+          </div>
+        </>
+      ) : (
+        <p className="wk-none muted">No trackers were active this week.</p>
+      );
+  }
 
   return (
     <section className="view" aria-labelledby="week-title">
@@ -100,30 +102,33 @@ export function WeekView() {
         </div>
       </header>
 
-      <div key={mondayKey} className="fade-in">
-        {rows.length > 0 ? (
-          <>
-            <WeekGrid
-              habits={habits}
-              rows={rows}
-              completions={completions}
-              mondayKey={mondayKey}
-              keys={keys}
-              today={today}
-              animateRows={!navigated}
-              onToggle={toggleCompletion}
-            />
-            <div className="wk-summary">
-              <p className="quote wk-summary__text">{getWeekSummaryMessage(summary.done, summary.due)}</p>
-              {showNote ? (
-                <p className="small-caps wk-summary__note">Through {formatWeekday(today)}</p>
-              ) : null}
-            </div>
-          </>
-        ) : (
-          <p className="wk-none muted">No trackers were active this week.</p>
-        )}
-      </div>
+      {hasHabits ? null : (
+        <EmptyState
+          title="Nothing to track yet"
+          body="Once you add a tracker, this page becomes your week at a glance: one row per habit, a mark for every day you show up."
+          action={
+            <Button size="lg" icon={<Icon name="plus" size={20} />} onClick={() => setEditorOpen(true)}>
+              Add your first tracker
+            </Button>
+          }
+        />
+      )}
+
+      {ledger !== null ? (
+        <div key={mondayKey} className="fade-in">
+          {ledger}
+        </div>
+      ) : null}
+
+      <WeekTasks
+        mondayKey={mondayKey}
+        today={today}
+        animate={!navigated}
+        staggerFrom={rows.length}
+        className={hasHabits ? undefined : 'wk-tasks--after-empty'}
+      />
+
+      <HabitEditor open={editorOpen} onClose={() => setEditorOpen(false)} />
     </section>
   );
 }

@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { msUntilNextHour } from '../useHour';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { msUntilNextHour, useHour } from '../useHour';
+import { fakeTarget, hookValue, mountHook, resetHook } from './fakeReact';
 
-// TZ=America/New_York. The hook itself needs a DOM; its pure helper is tested here.
+// TZ=America/New_York. The hook runs on a stand-in for React's hooks and the DOM (fakeReact.ts).
+vi.mock('react', async () => (await import('./fakeReact')).fakeReact);
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
@@ -59,5 +62,53 @@ describe('msUntilNextHour', () => {
     const ms = msUntilNextHour();
     expect(ms).toBeGreaterThanOrEqual(0);
     expect(ms).toBeLessThanOrEqual(2 * HOUR);
+  });
+});
+
+describe('useHour', () => {
+  let doc = fakeTarget({ visibilityState: 'visible' });
+  let win = fakeTarget({});
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetHook();
+    doc = fakeTarget({ visibilityState: 'visible' });
+    win = fakeTarget({});
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('window', win);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('re-reads the hour when it mounts: rendered just before the hour turns, mounted just after', () => {
+    vi.setSystemTime(new Date(2026, 9, 17, 11, 59, 59, 995));
+    useHour(); // the render
+    expect(hookValue()).toBe(11);
+    vi.setSystemTime(new Date(2026, 9, 17, 12, 0, 0, 20)); // React runs the passive effect a moment later
+    mountHook();
+    expect(hookValue()).toBe(12);
+  });
+
+  it('follows the clock hour by hour while mounted, re-reads it on focus, and stops once unmounted', () => {
+    vi.setSystemTime(new Date(2026, 9, 17, 10, 30, 0));
+    useHour();
+    const unmount = mountHook();
+    vi.advanceTimersByTime(30 * MINUTE); // 11:00:00.000; the timer keeps a 1 s margin
+    expect(hookValue()).toBe(10);
+    vi.advanceTimersByTime(1000);
+    expect(hookValue()).toBe(11);
+    vi.advanceTimersByTime(HOUR);
+    expect(hookValue()).toBe(12);
+    vi.setSystemTime(new Date(2026, 9, 17, 18, 5, 0)); // timers suspended in the background
+    win.dispatch('focus');
+    expect(hookValue()).toBe(18);
+    unmount();
+    expect(doc.listenerCount() + win.listenerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(5 * HOUR);
+    expect(hookValue()).toBe(18);
   });
 });

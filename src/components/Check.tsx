@@ -4,10 +4,15 @@ import { toneClass } from '../lib/selectors';
 import { cx } from './cx';
 import './Check.css';
 
+/** A habit colour, or the app's ember accent (used by one-time tasks). */
+export type CheckTone = HabitColor | 'ember';
+
 export interface CheckProps {
   checked: boolean;
   onChange: () => void;
-  tone: HabitColor;
+  tone: CheckTone;
+  /** 'round' for trackers (default); 'square' for one-time tasks — same mark, same spring. */
+  shape?: 'round' | 'square';
   /** Visual diameter in px (default 44). The hit area is always at least 44px. */
   size?: number;
   disabled?: boolean;
@@ -19,17 +24,34 @@ export interface CheckProps {
 }
 
 /**
- * Round toggle button. Filled with the habit tone when checked, with a spring scale and a
+ * Toggle button, round or square. Filled with the tone when checked, with a spring scale and a
  * stroke-drawn checkmark on toggle. Uses aria-pressed; the spring only plays on user toggles.
  */
-export function Check({ checked, onChange, tone, size = 44, disabled = false, label, className, ref }: CheckProps) {
+export function Check({
+  checked,
+  onChange,
+  tone,
+  shape = 'round',
+  size = 44,
+  disabled = false,
+  label,
+  className,
+  ref,
+}: CheckProps) {
   const [pulse, setPulse] = useState(false);
 
   return (
     <button
       ref={ref}
       type="button"
-      className={cx('check', toneClass(tone), checked && 'is-checked', pulse && 'is-pulse', className)}
+      className={cx(
+        'check',
+        shape === 'square' && 'check--square',
+        toneClass(tone),
+        checked && 'is-checked',
+        pulse && 'is-pulse',
+        className,
+      )}
       style={{ '--check-size': `${size}px` }}
       aria-pressed={checked}
       aria-label={label}

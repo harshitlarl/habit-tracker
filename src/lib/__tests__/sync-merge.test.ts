@@ -180,6 +180,8 @@ describe('parseRemoteDoc', () => {
     expect(parseRemoteDoc('a', rawDoc({ name: '  Morning run  ' }))?.name).toBe('Morning run');
     expect(parseRemoteDoc('a', rawDoc({ name: 'n'.repeat(41) }))?.name).toBe('n'.repeat(40));
     expect(parseRemoteDoc('a', rawDoc({ name: `  ${'n'.repeat(45)}` }))?.name).toBe('n'.repeat(40));
+    // The cut never leaves a trailing space: stored trimmed, as the importer would store it.
+    expect(parseRemoteDoc('a', rawDoc({ name: `${'n'.repeat(39)} x` }))?.name).toBe('n'.repeat(39));
   });
 
   it('emoji must be a string; it is trimmed and capped at 16 UTF-16 units', () => {
@@ -187,7 +189,8 @@ describe('parseRemoteDoc', () => {
     expect(parseRemoteDoc('a', rawDoc({ emoji: 1 }))).toBeNull();
     expect(parseRemoteDoc('a', rawDoc({ emoji: '' }))?.emoji).toBe('');
     expect(parseRemoteDoc('a', rawDoc({ emoji: ' 📚 ' }))?.emoji).toBe('📚');
-    expect(parseRemoteDoc('a', rawDoc({ emoji: '🏋️'.repeat(6) }))?.emoji).toHaveLength(16);
+    // 🏋️ is 3 units and the sixth starts at unit 15: it is dropped whole, never split into half a surrogate pair.
+    expect(parseRemoteDoc('a', rawDoc({ emoji: '🏋️'.repeat(6) }))?.emoji).toBe('🏋️'.repeat(5));
   });
 
   it('colour must be one of HABIT_COLORS', () => {
@@ -202,6 +205,7 @@ describe('parseRemoteDoc', () => {
     expect(parseRemoteDoc('a', rawDoc({ note: null }))).not.toHaveProperty('note');
     expect(parseRemoteDoc('a', rawDoc({ note: '   ' }))).not.toHaveProperty('note');
     expect(parseRemoteDoc('a', rawDoc({ note: 'y'.repeat(41) }))?.note).toBe('y'.repeat(40));
+    expect(parseRemoteDoc('a', rawDoc({ note: `${'y'.repeat(39)} z` }))?.note).toBe('y'.repeat(39));
     expect(parseRemoteDoc('a', rawDoc({ note: 5 }))).toBeNull();
     expect(parseRemoteDoc('a', rawDoc({ note: ['x'] }))).toBeNull();
   });

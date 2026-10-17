@@ -1,5 +1,6 @@
 import { isDateKey } from '../dates';
 import { newId } from '../ids';
+import { clampText } from '../text';
 import {
   HABIT_EMOJI_MAX,
   HABIT_NAME_MAX,
@@ -103,7 +104,7 @@ const TOMBSTONE_FIELDS: Readonly<Omit<Habit, 'id'>> = {
 function parseHabitFields(id: string, data: Record<string, unknown>): Habit | null {
   const { name, emoji, color, note, days, createdAt, archivedAt, order } = data;
   if (typeof name !== 'string') return null;
-  const trimmedName = name.trim().slice(0, HABIT_NAME_MAX);
+  const trimmedName = clampText(name, HABIT_NAME_MAX);
   if (trimmedName === '') return null;
   if (typeof emoji !== 'string') return null;
   if (!isHabitColor(color)) return null;
@@ -117,13 +118,13 @@ function parseHabitFields(id: string, data: Record<string, unknown>): Habit | nu
   const habit: Habit = {
     id,
     name: trimmedName,
-    emoji: emoji.trim().slice(0, HABIT_EMOJI_MAX),
+    emoji: clampText(emoji, HABIT_EMOJI_MAX),
     color,
     days: [...new Set<Weekday>(days)].sort((a, b) => a - b),
     createdAt,
     order: finalOrder,
   };
-  const trimmedNote = typeof note === 'string' ? note.trim().slice(0, HABIT_NOTE_MAX) : '';
+  const trimmedNote = typeof note === 'string' ? clampText(note, HABIT_NOTE_MAX) : '';
   if (trimmedNote) habit.note = trimmedNote;
   if (isDateKey(archivedAt)) habit.archivedAt = archivedAt;
   return habit;

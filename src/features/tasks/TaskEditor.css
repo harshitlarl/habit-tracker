@@ -1,0 +1,93 @@
+/* TaskEditor — the form inside the "New task" / "Edit task" sheet (SPEC §14.7).
+   The shared field styles (.field, .fieldset, .field__input) come from manage/fields.css. */
+
+.task-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding-top: var(--s-1);
+}
+
+/* ---------- Date ---------- */
+.task-editor__dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2); /* 8px rows: the chips' 44px hit areas meet without overlapping */
+}
+
+.task-editor__native-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+
+/* Native date/time controls dressed as fields: the field tokens, 50px tall, 17px text.
+   `color-scheme` is inherited from the root (tokens.css), so the system picker follows the app's
+   theme in both light and dark. The fixed line-height centres the value on iOS, where
+   `appearance: none` otherwise collapses the control or pins its text to the top. */
+.task-editor__native {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 50px;
+  line-height: 48px;
+  color-scheme: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-editor__native::-webkit-date-and-time-value {
+  text-align: left;
+  min-height: 1.3em;
+}
+
+.task-editor__native::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.task-editor__time {
+  flex: 0 1 220px;
+}
+
+/* "Remove" — a text link with button semantics and a 44px row. */
+.task-editor__link {
+  flex: none;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border-radius: var(--r-sm);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: background-color 160ms ease;
+}
+
+.task-editor__link:active {
+  background: var(--surface-2);
+}
+
+/* ---------- Actions ---------- */
+.task-editor__save {
+  margin-top: var(--s-1);
+}
+
+/* "This task was deleted on another device." — an always-present status line, empty otherwise
+   (the same line HabitEditor shows for a tracker). */
+.task-editor__gone {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.task-editor__gone:not(:empty) {
+  margin-bottom: var(--s-3);
+}
+
+.task-editor__manage {
+  margin-top: var(--s-2);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}

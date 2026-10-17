@@ -189,3 +189,150 @@ describe('sameTask / sameTasks', () => {
     expect(sameTasks(local([task('a')]), local([task('a')], ['z']))).toBe(false);
   });
 });
+
+describe('parseRemoteTask — the lenient edges', () => {
+  it('treats null optional fields as absent, coerces a non-boolean done to false and caps a long title', () => {
+    const doc = parseRemoteTask('a', {
+      title: `${'x'.repeat(70)}`,
+      note: null,
+      date: '2026-10-21',
+      time: null,
+      done: 'yes',
+      doneAt: null,
+      createdAt: null,
+      updatedAt: null,
+    });
+    expect(doc).toEqual({ id: 'a', title: 'x'.repeat(60), date: '2026-10-21', done: false, createdAt: '2026-10-21', deleted: false });
+    expect(parseRemoteTask('a', { title: 'x', date: '2026-10-21', note: 'n'.repeat(90) })?.note).toHaveLength(80);
+  });
+
+  it('caps the way the store does: never a trailing space or half a surrogate pair at the cut', () => {
+    const doc = parseRemoteTask('a', { title: `${'a'.repeat(59)} b`, date: '2026-10-21', note: `${'n'.repeat(79)} z` });
+    expect(doc).toMatchObject({ title: 'a'.repeat(59), note: 'n'.repeat(79) });
+    const emoji = parseRemoteTask('a', { title: `${'a'.repeat(59)}😀`, date: '2026-10-21', note: `${'n'.repeat(78)} 😀` });
+    expect(emoji).toMatchObject({ title: 'a'.repeat(59), note: 'n'.repeat(78) });
+  });
+
+  it('a tombstone keeps its fields when they are usable, and a non-true deleted flag is not a tombstone', () => {
+    expect(parseRemoteTask('a', { title: 'x', date: '2026-10-21', deleted: true })).toMatchObject({ title: 'x', deleted: true });
+    expect(parseRemoteTask('a', { title: 'x', date: '2026-10-21', deleted: 'true' })?.deleted).toBe(false);
+    expect(parseRemoteTask('a', { deleted: false })).toBeNull(); // neither a task nor a tombstone
+    expect(parseRemoteTask('a', [])).toBeNull();
+    expect(parseRemoteTask('a/b', { title: 'x', date: '2026-10-21' })).toBeNull();
+  });
+});
+
+describe('mergeTasks — more first-contact cases', () => {
+  it('a task done on both sides keeps the remote doneAt; a task done only in the cloud stays done; duplicate local tombstones push once', () => {
+    const l = local([task('a', { done: true, doneAt: '2026-10-21' }), task('b')], ['c', 'c']);
+    const r = [remote('a', { done: true, doneAt: '2026-10-20' }), remote('b', { done: true, doneAt: '2026-10-19' }), remote('c')];
+    const { merged, toPush } = mergeTasks(l, r);
+    expect(merged.tasks).toEqual([task('a', { done: true, doneAt: '2026-10-20' }), task('b', { done: true, doneAt: '2026-10-19' })]);
+    expect(merged.deletedTaskIds).toEqual(['c']);
+    expect(toPush).toEqual([{ type: 'tombstoneTask', taskId: 'c' }]);
+  });
+
+  it('a task tombstoned in the cloud is dropped locally without a push; a cloud tombstone beats a local live copy', () => {
+    const l = local([task('a', { done: true, doneAt: '2026-10-21' })]);
+    const { merged, toPush } = mergeTasks(l, [remote('a', { deleted: true })]);
+    expect(merged).toEqual(local([], ['a']));
+    expect(toPush).toEqual([]);
+  });
+
+  it('a local task listed in its own tombstones is dropped (the tombstone wins) and nothing is pushed for it', () => {
+    const { merged, toPush } = mergeTasks(local([task('a')], ['a']), []);
+    expect(merged).toEqual(local([], ['a']));
+    expect(toPush).toEqual([]);
+  });
+
+  it('an empty cloud and an empty device merge to nothing', () => {
+    expect(mergeTasks(local(), [])).toEqual({ merged: local(), toPush: [] });
+  });
+});
+
+describe('mergeTasksWithBase — more three-way cases', () => {
+  const base = local([task('a'), task('b'), task('c', { note: 'keep' })]);
+
+  it('a deletion here beats the live cloud copy and is pushed; a check-off elsewhere sticks on an untouched task', () => {
+    const l = local([task('a'), task('c', { note: 'keep' })], ['b']);
+    const r = [remote('a', { done: true, doneAt: '2026-10-20' }), remote('b'), remote('c', { note: 'keep' })];
+    const { merged, toPush } = mergeTasksWithBase(base, l, r);
+    expect(merged.tasks).toEqual([task('a', { done: true, doneAt: '2026-10-20' }), task('c', { note: 'keep' })]);
+    expect(merged.deletedTaskIds).toEqual(['b']);
+    expect(toPush).toEqual([{ type: 'tombstoneTask', taskId: 'b' }]);
+  });
+
+  it('edits to different fields of the same task on both sides both survive; the same field edited on both sides takes this device', () => {
+    const l = local([task('a', { time: '09:00', title: 'mine' }), task('b', { date: '2026-10-25' }), task('c', { note: 'keep' })]);
+    const r = [remote('a', { note: 'theirs', title: 'theirs' }), remote('b', { date: '2026-10-26' }), remote('c', { note: 'keep' })];
+    const { merged, toPush } = mergeTasksWithBase(base, l, r);
+    expect(merged.tasks).toEqual([
+      task('a', { time: '09:00', title: 'mine', note: 'theirs' }),
+      task('c', { note: 'keep' }),
+      task('b', { date: '2026-10-25' }),
+    ]);
+    expect(toPush).toEqual([
+      { type: 'setTask', task: task('a', { time: '09:00', title: 'mine', note: 'theirs' }) },
+      { type: 'setTask', task: task('b', { date: '2026-10-25' }) },
+    ]);
+  });
+
+  it('a note cleared here reaches the merged copy even when the cloud edited another field', () => {
+    const l = local([task('a'), task('b'), task('c')]); // c's note cleared here
+    const r = [remote('a'), remote('b'), remote('c', { note: 'keep', time: '10:00' })];
+    const { merged, toPush } = mergeTasksWithBase(base, l, r);
+    expect(merged.tasks.find((t) => t.id === 'c')).toEqual(task('c', { time: '10:00' }));
+    expect(toPush).toEqual([{ type: 'setTask', task: task('c', { time: '10:00' }) }]);
+  });
+
+  it('a task tombstoned by the cloud while edited here is dropped: the tombstone wins and nothing is pushed', () => {
+    const l = local([task('a', { title: 'edited here' }), task('b'), task('c', { note: 'keep' })]);
+    const r = [remote('a', { deleted: true }), remote('b'), remote('c', { note: 'keep' })];
+    const { merged, toPush } = mergeTasksWithBase(base, l, r);
+    expect(merged.tasks.map((t) => t.id)).toEqual(['b', 'c']);
+    expect(merged.deletedTaskIds).toEqual(['a']);
+    expect(toPush).toEqual([]);
+  });
+
+  it('is a no-op when nothing changed anywhere', () => {
+    const r = [remote('a'), remote('b'), remote('c', { note: 'keep' })];
+    const { merged, toPush } = mergeTasksWithBase(base, base, r);
+    expect(sameTasks(merged, base)).toBe(true);
+    expect(toPush).toEqual([]);
+  });
+
+  it('with an empty base (a phase-2 baseline) behaves like first contact: locals go up, cloud comes down, both-sided ids follow the cloud except done', () => {
+    const l = local([task('mine'), task('both', { done: true, doneAt: '2026-10-20', title: 'local' })]);
+    const r = [remote('cloud'), remote('both', { title: 'remote' })];
+    const { merged, toPush } = mergeTasksWithBase(local(), l, r);
+    expect(merged.tasks).toEqual([task('both', { title: 'remote', done: true, doneAt: '2026-10-20' }), task('cloud'), task('mine')]);
+    expect(toPush).toEqual([
+      { type: 'setTask', task: task('both', { title: 'remote', done: true, doneAt: '2026-10-20' }) },
+      { type: 'setTask', task: task('mine') },
+    ]);
+  });
+});
+
+describe('diffTasksForPush — more cases', () => {
+  it('a task removed without a tombstone yields nothing; an existing tombstone is not re-sent', () => {
+    expect(diffTasksForPush(local([task('a')], ['x']), local([], ['x']))).toEqual([]);
+  });
+
+  it('is empty exactly when sameTasks', () => {
+    const a = local([task('a', { note: 'n' })], ['x']);
+    const b = local([task('a', { note: 'n' })], ['x']);
+    expect(sameTasks(a, b)).toBe(true);
+    expect(diffTasksForPush(a, b)).toEqual([]);
+    const c = local([task('a', { note: 'm' })], ['x']);
+    expect(sameTasks(a, c)).toBe(false);
+    expect(diffTasksForPush(a, c)).toEqual([{ type: 'setTask', task: task('a', { note: 'm' }) }]);
+  });
+});
+
+describe('sameTasks — duplicates', () => {
+  it('a duplicate id on either side never stands in for a task the other side lacks', () => {
+    expect(sameTasks(local([task('a'), task('a')]), local([task('a'), task('b')]))).toBe(false);
+    expect(sameTasks(local([task('a'), task('b')]), local([task('a'), task('a')]))).toBe(false);
+    expect(sameTasks(local([task('a'), task('a')]), local([task('a'), task('a')]))).toBe(false);
+  });
+});

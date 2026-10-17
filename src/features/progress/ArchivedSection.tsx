@@ -16,13 +16,22 @@ export interface ArchivedSectionProps {
   /** Start expanded (used when nothing else is left to show). */
   defaultOpen?: boolean;
   onRestore: (id: string) => void;
+  /** Opens the tracker editor for an archived tracker (its emoji + name are the button). Keep it stable. */
+  onEdit: (id: string) => void;
 }
 
 /* The view remounts on every tab switch; remember the disclosure state for the session. */
 let rememberedOpen: boolean | null = null;
 
 /** Collapsed list of archived trackers with their final stats and a Restore action. */
-export function ArchivedSection({ habits, completions, today, defaultOpen = false, onRestore }: ArchivedSectionProps) {
+export function ArchivedSection({
+  habits,
+  completions,
+  today,
+  defaultOpen = false,
+  onRestore,
+  onEdit,
+}: ArchivedSectionProps) {
   const [open, setOpen] = useState<boolean>(() => rememberedOpen ?? defaultOpen);
   const panelId = useId();
   const headingId = useId();
@@ -45,7 +54,9 @@ export function ArchivedSection({ habits, completions, today, defaultOpen = fals
           onClick={toggle}
         >
           <span className="small-caps small-caps--12">Archived</span>
+          <span className="sr-only">, </span>
           <span className="archived__count tabular">{habits.length}</span>
+          <span className="sr-only"> {plural(habits.length, 'tracker')}</span>
           <Icon name="chevronRight" size={18} className={cx('archived__chevron', open && 'is-open')} />
         </button>
       </h2>
@@ -53,7 +64,14 @@ export function ArchivedSection({ habits, completions, today, defaultOpen = fals
       {open ? (
         <ul id={panelId} className="archived__list fade-in">
           {habits.map((h) => (
-            <ArchivedRow key={h.id} habit={h} dates={completions[h.id]} today={today} onRestore={onRestore} />
+            <ArchivedRow
+              key={h.id}
+              habit={h}
+              dates={completions[h.id]}
+              today={today}
+              onRestore={onRestore}
+              onEdit={onEdit}
+            />
           ))}
         </ul>
       ) : null}
@@ -66,10 +84,12 @@ interface ArchivedRowProps {
   dates: DateSet;
   today: DateKey;
   onRestore: (id: string) => void;
+  onEdit: (id: string) => void;
 }
 
-const ArchivedRow = memo(function ArchivedRow({ habit, dates, today, onRestore }: ArchivedRowProps) {
+const ArchivedRow = memo(function ArchivedRow({ habit, dates, today, onRestore, onEdit }: ArchivedRowProps) {
   const stats = useMemo(() => lifetimeStats(habit, dates, today), [habit, dates, today]);
+  const factsId = useId();
 
   const facts: string[] = [];
   if (habit.archivedAt) {
@@ -87,15 +107,26 @@ const ArchivedRow = memo(function ArchivedRow({ habit, dates, today, onRestore }
   facts.push(`${stats.total} done`);
   if (stats.due > 0) facts.push(`${percent(stats.rate)}%`);
 
+  // Emoji + name open the editor ("Edit <name>"); the final stats stay readable as the description.
   return (
     <li className="archived__item">
-      <span className={cx('archived__emoji', toneClass(habit.color))} aria-hidden="true">
-        {habit.emoji}
-      </span>
-      <div className="archived__meta">
-        <div className="archived__name truncate">{habit.name}</div>
-        <div className="archived__facts tabular">{facts.join(' · ')}</div>
-      </div>
+      <button
+        type="button"
+        className="archived__edit"
+        aria-label={`Edit ${habit.name}`}
+        aria-describedby={factsId}
+        onClick={() => onEdit(habit.id)}
+      >
+        <span className={cx('archived__emoji', toneClass(habit.color))} aria-hidden="true">
+          {habit.emoji}
+        </span>
+        <span className="archived__meta">
+          <span className="archived__name truncate">{habit.name}</span>
+          <span id={factsId} className="archived__facts tabular">
+            {facts.join(' · ')}
+          </span>
+        </span>
+      </button>
       <Button
         variant="ghost"
         icon={<Icon name="restore" size={18} />}

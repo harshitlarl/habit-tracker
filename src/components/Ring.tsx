@@ -11,11 +11,13 @@ export interface RingProps {
   children?: ReactNode;
   /** Accessible name for the progressbar, e.g. "Today's progress". */
   label?: string;
+  /** Spoken value, e.g. "3 of 5 done"; without it assistive tech reads the percentage. */
+  valueText?: string;
   className?: string;
 }
 
 /** SVG progress ring: ember arc on a --line track; the arc animates on change. */
-export function Ring({ value, size = 56, stroke = 5, children, label, className }: RingProps) {
+export function Ring({ value, size = 56, stroke = 5, children, label, valueText, className }: RingProps) {
   const v = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
@@ -29,6 +31,7 @@ export function Ring({ value, size = 56, stroke = 5, children, label, className 
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(v * 100)}
+      aria-valuetext={valueText}
       aria-label={label}
     >
       <svg className="ring__svg" width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">

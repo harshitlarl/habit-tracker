@@ -1,0 +1,150 @@
+/* Week → "Tasks this week" (SPEC §14.6): one-time tasks under their day, below the ledger.
+   Same hairline rhythm as the grid rows; small-caps day labels; a square ember check per task. */
+
+.wk-tasks {
+  margin-top: var(--s-7);
+}
+
+/* Right after the no-trackers empty state, which brings its own bottom padding. */
+.wk-tasks--after-empty {
+  margin-top: var(--s-2);
+}
+
+.wk-tasks__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  min-height: 44px;
+  margin-bottom: var(--s-1);
+}
+
+/* Round icon button, the same family as the ‹ › week buttons above. */
+.wk-tasks__add {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  transition:
+    transform 120ms ease,
+    background-color 160ms ease;
+}
+
+.wk-tasks__add:active {
+  transform: scale(0.94);
+  background: var(--surface-2);
+}
+
+/* ---------- Day groups ---------- */
+.wk-tasks__group + .wk-tasks__group {
+  margin-top: var(--s-5);
+}
+
+.wk-tasks__day {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 20px;
+  padding: 0 var(--s-1);
+  margin-bottom: var(--s-1);
+}
+
+/* Today's group is picked out like today's column in the grid. */
+.wk-tasks__group.is-today .wk-tasks__day .small-caps {
+  color: var(--accent-text);
+}
+
+.wk-tasks__list {
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- Rows ---------- */
+.wk-task {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 56px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The 32px square sits in a 44px hit box; pulled out so the square lines up with the day label. */
+.wk-task__check {
+  margin-left: -2px;
+}
+
+/* Title + meta; the whole remaining row opens the editor. */
+.wk-task__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-1);
+  border-radius: var(--r-sm);
+  text-align: left;
+  transition: background-color 160ms ease;
+}
+
+.wk-task__body:active {
+  background: var(--surface-2);
+}
+
+.wk-task__title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  transition: color 200ms ease;
+}
+
+.wk-task__meta {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* "Still open": a past task not yet done. .small-caps supplies size, weight and tracking. */
+.wk-task__tag {
+  color: var(--accent-text);
+}
+
+/* Done: the title quiets down under a soft strike; nothing moves. The brief names --ink-3 for the
+   text, but at 2.7:1 on paper it misses the 4.5:1 bar, so --ink-2 carries the words and --ink-3
+   only draws the strike. */
+.wk-task.is-done .wk-task__title {
+  color: var(--ink-2);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+}
+
+/* ---------- Empty ---------- */
+.wk-tasks__none {
+  padding: var(--s-3) var(--s-1) var(--s-2);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 17px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+@media (hover: hover) {
+  .wk-tasks__add:hover,
+  .wk-task__body:hover {
+    background: var(--surface-2);
+  }
+}

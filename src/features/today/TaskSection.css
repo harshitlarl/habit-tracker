@@ -1,0 +1,67 @@
+/* Today → Tasks (SPEC §14.5): head with status and "Add task", the list, the quiet empty line.
+   Rows live in TaskRow.css; the section spacing comes from .today__section in TodayView.css. */
+
+.tasks__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  min-height: 44px;
+  /* A 44px button in a 24px head: pull the block in so the label sits level with the other heads. */
+  margin: -10px 0 -4px;
+}
+
+.tasks__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* 44px icon button; the icon's edge meets the content edge, like the Checks on the rows above. */
+.tasks__add {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-right: -12px;
+  border-radius: 50%;
+  color: var(--accent-text);
+  transition:
+    background-color 160ms ease,
+    transform 120ms ease;
+}
+
+.tasks__add:active {
+  background: var(--ember-soft);
+  transform: scale(0.94);
+}
+
+@media (hover: hover) {
+  .tasks__add:hover {
+    background: var(--surface-2);
+  }
+}
+
+.tasks__list {
+  border-top: 1px solid var(--line);
+}
+
+/* "Nothing planned today." — a quiet italic serif line between hairlines. */
+.tasks__empty {
+  padding: var(--s-3) 0 var(--s-4);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 17px;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  font-variation-settings: 'SOFT' 50, 'opsz' 18;
+  color: var(--ink-2);
+}
+
+/* Below the no-trackers empty state (which brings its own bottom padding). */
+.today__empty + .tasks {
+  margin-top: var(--s-2);
+}

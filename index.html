@@ -17,7 +17,16 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Momentum" />
     <meta name="format-detection" content="telephone=no" />
-    <!-- Absolute /icons/ hrefs are rewritten with Vite's base at build time. -->
+    <!-- Absolute /fonts/ and /icons/ hrefs are rewritten with Vite's base at build time. -->
+    <!-- The three font files the first screen sets (src/styles/fonts.css), fetched with the page rather
+         than once React lays text out, so a first visit does not paint Georgia and shift when Fraunces
+         arrives. No crossorigin, on purpose: WebKit (iOS Safari, the engine the app ships to) fetches
+         same-origin @font-face files in no-cors mode, so a crossorigin preload is never matched there —
+         each font downloaded twice and "preloaded but not used" was logged on every load. Chromium and
+         Firefox fetch fonts in cors mode, so they leave these preloads unused and log a notice. -->
+    <link rel="preload" href="/fonts/fraunces-latin-full-normal.woff2" as="font" type="font/woff2" />
+    <link rel="preload" href="/fonts/fraunces-latin-full-italic.woff2" as="font" type="font/woff2" />
+    <link rel="preload" href="/fonts/hanken-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
     <link rel="icon" href="/icons/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/icons/pwa-192.png" type="image/png" sizes="192x192" />

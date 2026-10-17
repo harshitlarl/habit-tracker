@@ -19,7 +19,8 @@
 
 # Cache headers — the same set as firebase.json and vercel.json.
 # The service worker, the app shell and the manifest are always revalidated so a new deploy is
-# picked up on the next launch; hashed build output is immutable; icons are refreshed daily.
+# picked up on the next launch; hashed build output is immutable; icons and fonts (stable names under
+# public/) are refreshed daily. The last block adds the baseline security headers to every response.
 [[headers]]
   for = "/sw.js"
   [headers.values]
@@ -49,3 +50,17 @@
   for = "/icons/*"
   [headers.values]
     Cache-Control = "public, max-age=86400"
+
+[[headers]]
+  for = "/fonts/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"
+
+# Baseline security headers (no Content-Security-Policy yet). GitHub Pages cannot send headers.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

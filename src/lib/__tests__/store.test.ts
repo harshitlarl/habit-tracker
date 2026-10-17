@@ -5,11 +5,14 @@ import useStore, {
   HABIT_EMOJI_MAX,
   HABIT_NAME_MAX,
   HABIT_NOTE_MAX,
+  NOT_A_BACKUP,
   STORAGE_KEY,
   lastStorageError,
   normalizeDays,
+  useStorageHealth,
   validateAppData,
   type HabitInput,
+  type StorageHealth,
   type StoreState,
 } from '../store';
 import { addDays, isScheduled, todayKey, weekdayOf } from '../dates';
@@ -98,7 +101,7 @@ beforeEach(() => {
 });
 
 describe('persistence wiring', () => {
-  it('uses the momentum-v1 key at version 2 and has hydrated', () => {
+  it('uses the momentum-v1 key at version 3 and has hydrated', () => {
     expect(STORAGE_KEY).toBe('momentum-v1');
     expect(useStore.persist.getOptions().name).toBe('momentum-v1');
     expect(useStore.persist.getOptions().version).toBe(3);
@@ -668,11 +671,15 @@ describe('export / import', () => {
     ['an array', () => [], /JSON object/],
     ['a string', () => '{}', /JSON object/],
     ['a number', () => 1, /JSON object/],
-    ['wrong version', (d) => ({ ...d, version: 2 }), /version/],
-    ['string version', (d) => ({ ...d, version: '1' }), /version/],
-    ['missing version', (d) => ({ ...d, version: undefined }), /version/],
+    ['wrong version', (d) => ({ ...d, version: 2 }), /^Unsupported backup version: 2\.$/],
+    ['a fractional version', (d) => ({ ...d, version: 1.5 }), /^Unsupported backup version: 1\.5\.$/],
+    ['string version', (d) => ({ ...d, version: '1' }), /^This file is not a Momentum backup\.$/],
+    ['missing version', (d) => ({ ...d, version: undefined }), /^This file is not a Momentum backup\.$/],
+    ['null version', (d) => ({ ...d, version: null }), /^This file is not a Momentum backup\.$/],
+    ['NaN version', (d) => ({ ...d, version: Number.NaN }), /^This file is not a Momentum backup\.$/],
+    ['a foreign JSON object', () => ({ hello: 'world' }), /^This file is not a Momentum backup\.$/],
     ['habits not an array', (d) => ({ ...d, habits: {} }), /habits/],
-    ['habits missing', (d) => ({ ...d, habits: undefined }), /habits/],
+    ['habits missing', (d) => ({ ...d, habits: undefined }), /^This file is not a Momentum backup\.$/],
     ['habit not an object', (d) => ({ ...d, habits: [1] }), /Tracker #1/],
     ['habit null', (d) => ({ ...d, habits: [null] }), /Tracker #1/],
     ['habit without id', (d) => ({ ...d, habits: [{ ...d.habits[0], id: '' }] }), /id/],
@@ -710,7 +717,7 @@ describe('export / import', () => {
     ['an emoji over 16 UTF-16 units', (d) => ({ ...d, habits: [{ ...d.habits[0], emoji: '🏋️'.repeat(6) }] }), /emoji longer than 16/],
     ['a 100k-character emoji', (d) => ({ ...d, habits: [{ ...d.habits[0], emoji: '🏋️'.repeat(100_000) }] }), /emoji longer than 16/],
     ['completions not an object', (d) => ({ ...d, completions: [] }), /completions/],
-    ['completions missing', (d) => ({ ...d, completions: undefined }), /completions/],
+    ['completions missing', (d) => ({ ...d, completions: undefined }), /^This file is not a Momentum backup\.$/],
     ['orphan completions', (d) => ({ ...d, completions: { ...d.completions, zzz: { '2026-10-01': true } } }), /unknown tracker/],
     ['completion record not an object', (d) => ({ ...d, completions: { a: ['2026-10-01'] } }), /must be an object/],
     ['completion record null', (d) => ({ ...d, completions: { a: null } }), /must be an object/],
@@ -772,6 +779,23 @@ describe('export / import', () => {
       expect(result.data.exportedAt).toBe('2026-10-16T12:00:00.000Z');
       expect(result.data.settings).toEqual({ theme: 'dark', installHintDismissed: true });
     }
+  });
+
+  it('names foreign JSON as not a backup, and a real backup of an unknown version by its number', () => {
+    expect(NOT_A_BACKUP).toBe('This file is not a Momentum backup.');
+    expect(validateAppData({ hello: 'world' })).toEqual({ ok: false, error: NOT_A_BACKUP });
+    expect(validateAppData({ version: 1, settings: DEFAULT_SETTINGS })).toEqual({ ok: false, error: NOT_A_BACKUP });
+    expect(validateAppData({ ...validBackup(), version: '1' })).toEqual({ ok: false, error: NOT_A_BACKUP });
+    // A newer Momentum file (a number this build does not know) keeps saying which version it is,
+    // whatever else it holds.
+    expect(validateAppData({ ...validBackup(), version: 2 })).toEqual({
+      ok: false,
+      error: 'Unsupported backup version: 2.',
+    });
+    expect(validateAppData({ version: 3, habits: [], completions: {}, settings: {} })).toEqual({
+      ok: false,
+      error: 'Unsupported backup version: 3.',
+    });
   });
 
   it('validateAppData is a preview: it does not change the store', () => {
@@ -873,6 +897,123 @@ describe('when localStorage rejects a write', () => {
     expect(store().habits).toHaveLength(1);
     expect(isDone(store().completions, store().habits[0]?.id ?? '', TODAY)).toBe(true);
     expect(lastStorageError()?.name).toBe('QuotaExceededError');
+  });
+});
+
+describe('storage health (useStorageHealth)', () => {
+  const healthy: StorageHealth = { error: null, unavailable: false };
+  const health = (): StorageHealth => useStorageHealth.getState();
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is healthy outside a browser, where the in-memory copy is the expected storage', () => {
+    vi.stubGlobal('localStorage', undefined);
+    add('A');
+    expect(health()).toEqual(healthy);
+    expect(lastStorageError()).toBeNull();
+  });
+
+  it('records a refused write, keeps it through further refusals and clears once a write lands', () => {
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    add('A');
+    expect(health()).toEqual(healthy);
+
+    local.failure = quotaError();
+    add('B');
+    expect(health().error?.name).toBe('QuotaExceededError');
+    expect(health().unavailable).toBe(false);
+    expect(lastStorageError()).toBe(health().error); // the accessor reads the same record
+    store().toggleCompletion(store().habits[0]?.id ?? '', TODAY);
+    expect(health().error?.name).toBe('QuotaExceededError');
+
+    local.failure = null;
+    store().setTheme('dark');
+    expect(health()).toEqual(healthy);
+    expect(lastStorageError()).toBeNull();
+  });
+
+  it('records the import pre-write too: a refused import leaves the warning up until a write lands', () => {
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    local.failure = new Error('The operation is insecure.');
+    expect(store().importData(validBackup()).ok).toBe(false);
+    expect(health().error?.message).toBe('The operation is insecure.');
+
+    local.failure = null;
+    expect(store().importData(validBackup())).toEqual({ ok: true });
+    expect(health()).toEqual(healthy);
+  });
+
+  it('notifies subscribers only when the health actually changes', () => {
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    add('A');
+    const seen: StorageHealth[] = [];
+    const unsubscribe = useStorageHealth.subscribe((state) => {
+      seen.push(state);
+    });
+    try {
+      store().setTheme('dark'); // healthy → healthy: silent
+      expect(seen).toEqual([]);
+      local.failure = quotaError();
+      store().setTheme('light');
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.error?.name).toBe('QuotaExceededError');
+      local.failure = null;
+      store().setTheme('system');
+      expect(seen).toHaveLength(2);
+      expect(seen[1]).toEqual(healthy);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('marks storage unavailable in a browser without localStorage, and recovers when it is back', () => {
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('localStorage', undefined);
+    add('A');
+    expect(health()).toEqual({ error: null, unavailable: true });
+    expect(lastStorageError()).toBeNull(); // nothing refused a write: there was nothing to write to
+    expect(store().habits).toHaveLength(1); // the session keeps working in memory
+
+    const local = fakeLocalStorage();
+    vi.stubGlobal('localStorage', local);
+    store().setTheme('dark');
+    expect(health()).toEqual(healthy);
+    expect(local.getItem(STORAGE_KEY)).toContain('"theme":"dark"');
+  });
+
+  it('knows at launch: hydration in a browser without localStorage marks it unavailable before any change', async () => {
+    vi.stubGlobal('localStorage', undefined);
+    add('A'); // healthy outside a browser
+    expect(health()).toEqual(healthy);
+    vi.stubGlobal('window', {});
+    await useStore.persist.rehydrate();
+    expect(health()).toEqual({ error: null, unavailable: true });
+  });
+
+  it('treats a localStorage whose access throws (storage blocked) as unavailable', () => {
+    vi.stubGlobal('window', {});
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('The operation is insecure.', 'SecurityError');
+      },
+    });
+    try {
+      expect(() => add('A')).not.toThrow();
+      expect(health()).toEqual({ error: null, unavailable: true });
+      // An import still lands in memory (there is nothing to refuse it), and the warning stays up.
+      expect(store().importData(validBackup())).toEqual({ ok: true });
+      expect(health()).toEqual({ error: null, unavailable: true });
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'localStorage', original);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
   });
 });
 
@@ -1065,6 +1206,22 @@ describe('persist version 2: migration and repair', () => {
     expect(store().deletedIds).toEqual(['gone']);
     // Whatever hydration repairs, the device can still back itself up.
     expect(validateAppData(JSON.parse(JSON.stringify(store().exportData()))).ok).toBe(true);
+  });
+
+  it('a repaired over-long name, emoji or note never ends in a space or half a character', async () => {
+    await rehydrateFrom({
+      state: {
+        habits: [storedHabit({ name: `${'n'.repeat(39)} x`, emoji: '🏋️'.repeat(6), note: `${'m'.repeat(38)} 😀` })],
+        completions: {},
+        settings: DEFAULT_SETTINGS,
+        deletedIds: [],
+      },
+      version: 2,
+    });
+    expect(store().habits[0]).toMatchObject({ name: 'n'.repeat(39), emoji: '🏋️'.repeat(5), note: 'm'.repeat(38) });
+    const before = store().habits;
+    expect(store().importData(JSON.parse(JSON.stringify(store().exportData())) as unknown)).toEqual({ ok: true });
+    expect(store().habits).toEqual(before);
   });
 
   it('keeps a tracker without a usable name under a placeholder, so it can be renamed instead of lost', async () => {

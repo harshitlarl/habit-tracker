@@ -24,7 +24,10 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      // New builds install silently and take over on the next launch.
+      // A new build installs in the background and takes control at once (skipWaiting + clientsClaim
+      // below). src/pwa.ts decides when the open page reloads into it: straight away when nothing is
+      // being edited, otherwise when the open sheet closes or the app is left; it also checks for a new
+      // build each time the app returns to the foreground, at most once an hour.
       registerType: 'autoUpdate',
       // Precache the two public icons the manifest does not list; manifest icons are added
       // automatically (includeManifestIcons defaults to true). scope and start_url are left
@@ -47,12 +50,27 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // woff2 keeps the self-hosted Fraunces / Hanken Grotesk files available offline.
+        // woff2 keeps the three self-hosted font files (public/fonts/, preloaded by index.html)
+        // available offline; they are globbed from dist/fonts/ with a revision hash each.
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         // public/icons/* already enter the precache via includeAssets + manifest icons;
-        // globbing them too would list every icon twice.
-        globIgnores: ['**/node_modules/**/*', 'icons/**'],
-        maximumFileSizeToCacheInBytes: 4_000_000,
+        // globbing them too would list every icon twice. The Firebase SDK chunk stays out of the
+        // precache: its hash changes with every deploy (it imports a helper from the entry chunk),
+        // so precaching it made every install download ~200 kB of unchanged SDK, devices that never
+        // sign in included. It is cached at runtime instead, the first time sync loads it.
+        globIgnores: ['**/node_modules/**/*', 'icons/**', '**/firebase-*.js'],
+        runtimeCaching: [
+          {
+            // Matches under any base (/assets/… and /habit-tracker/assets/…); hashed, so cache-first
+            // is safe. Two entries: the current build's chunk and the previous one, while it updates.
+            urlPattern: /\/assets\/firebase-[^/]+\.js$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'firebase-sdk',
+              expiration: { maxEntries: 2, maxAgeSeconds: 31_536_000 },
+            },
+          },
+        ],
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,

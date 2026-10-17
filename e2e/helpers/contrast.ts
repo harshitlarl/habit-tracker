@@ -277,3 +277,303 @@ export async function expectToneContrast(page: Page, theme: 'light' | 'dark'): P
   ).toEqual([]);
   return table;
 }
+
+/* ---------- Week marks: non-text contrast (WCAG 1.4.11, ≥ 3:1) ---------- */
+
+export type MarkState = 'done' | 'bonus' | 'due' | 'off';
+
+export interface MarkContrast {
+  state: MarkState;
+  /** The cell's accessible name, e.g. "Gym, Saturday 17 October, bonus". */
+  label: string;
+  /** The cell's tone class, e.g. "tone-ochre". */
+  tone: string;
+  /** What the mark sits on: today's ember band or the paper. */
+  on: 'band' | 'paper';
+  /** Ratios of the parts that carry the state (see auditWeekMarks). */
+  parts: Record<string, number>;
+  pass: boolean;
+}
+
+/**
+ * Measures every mark in the Week grid's tappable cells (disabled cells are inactive components,
+ * outside 1.4.11) against what it actually sits on — the paper, or today's translucent ember band —
+ * compositing translucent tokens like --line-strong first. What has to clear 3:1 per state:
+ *   done  — the check drawn on the filled disc (the fill against the band is reported, not judged:
+ *           the tone table in expectToneContrast covers it on paper)
+ *   bonus — the tone check on the paper disc, and the tone ring on at least one side (inner edge
+ *           against the disc, or outer edge against the surface behind the cell)
+ *   due   — the --line-strong outline against the surface behind
+ *   off   — the --line-strong dash against the surface behind
+ */
+export async function auditWeekMarks(page: Page): Promise<MarkContrast[]> {
+  await settleAnimations(page);
+  return page.evaluate(() => {
+    interface C {
+      r: number;
+      g: number;
+      b: number;
+      a: number;
+    }
+    const parse = (css: string): C | null => {
+      const m = /^rgba?\(([^)]+)\)$/.exec(css.trim());
+      const inner = m?.[1];
+      if (inner === undefined) return null;
+      const [r, g, b, a] = inner.split(/[\s,/]+/).filter(Boolean).map(Number);
+      if (r === undefined || g === undefined || b === undefined || [r, g, b].some(Number.isNaN)) return null;
+      return { r, g, b, a: a === undefined || Number.isNaN(a) ? 1 : a };
+    };
+    const over = (top: C, under: C): C => ({
+      r: top.r * top.a + under.r * (1 - top.a),
+      g: top.g * top.a + under.g * (1 - top.a),
+      b: top.b * top.a + under.b * (1 - top.a),
+      a: 1,
+    });
+    const lin = (v: number): number => {
+      const s = v / 255;
+      return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = (c: C): number => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+    const ratio = (x: C, y: C): number => {
+      const lx = lum(x);
+      const ly = lum(y);
+      return Math.round(((Math.max(lx, ly) + 0.05) / (Math.min(lx, ly) + 0.05)) * 100) / 100;
+    };
+
+    const bodyBg = parse(getComputedStyle(document.body).backgroundColor) ?? { r: 255, g: 255, b: 255, a: 1 };
+    const band = document.querySelector<HTMLElement>('.wk-band');
+    const bandRect = band ? band.getBoundingClientRect() : null;
+    const bandBg = band ? parse(getComputedStyle(band).backgroundColor) : null;
+
+    /** The opaque colour behind a cell (ancestors' backgrounds composited, today's band included). */
+    const behindCell = (cell: HTMLElement): { bg: C; on: 'band' | 'paper' } => {
+      const rect = cell.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const layers: C[] = [];
+      let base: C | null = null;
+      let on: 'band' | 'paper' = 'paper';
+      for (let a: HTMLElement | null = cell; a; a = a.parentElement) {
+        const c = parse(getComputedStyle(a).backgroundColor);
+        if (c && c.a > 0) {
+          if (c.a >= 1) {
+            base = c;
+            break;
+          }
+          layers.push(c);
+        }
+        if (a.classList.contains('wk-grid') && bandRect && bandBg && bandBg.a > 0) {
+          if (cx >= bandRect.left && cx <= bandRect.right && cy >= bandRect.top && cy <= bandRect.bottom) {
+            on = 'band';
+            if (bandBg.a >= 1) {
+              base = bandBg;
+              break;
+            }
+            layers.push(bandBg);
+          }
+        }
+      }
+      let bg = base ?? bodyBg;
+      for (let i = layers.length - 1; i >= 0; i -= 1) {
+        const layer = layers[i];
+        if (layer) bg = over(layer, bg);
+      }
+      return { bg, on };
+    };
+
+    const out: Array<{
+      state: 'done' | 'bonus' | 'due' | 'off';
+      label: string;
+      tone: string;
+      on: 'band' | 'paper';
+      parts: Record<string, number>;
+      pass: boolean;
+    }> = [];
+    for (const cell of Array.from(document.querySelectorAll<HTMLButtonElement>('.wk-cell'))) {
+      if (cell.disabled) continue;
+      const state = (['done', 'bonus', 'due', 'off'] as const).find((s) => cell.classList.contains(`wk-cell--${s}`));
+      const mark = cell.querySelector<HTMLElement>('.wk-mark');
+      if (!state || !mark) continue;
+      const { bg, on } = behindCell(cell);
+      const ms = getComputedStyle(mark);
+      const check = cell.querySelector<SVGElement>('.wk-mark__check');
+      const fill = parse(ms.backgroundColor);
+      const border = parse(ms.borderTopColor);
+      const stroke = check ? parse(getComputedStyle(check).stroke) : null;
+      const parts: Record<string, number> = {};
+      let pass = false;
+      if (state === 'off' && fill) {
+        parts.dash = ratio(over(fill, bg), bg);
+        pass = parts.dash >= 3;
+      } else if (state === 'due' && border) {
+        parts.ring = ratio(over(border, bg), bg);
+        pass = parts.ring >= 3;
+      } else if (state === 'bonus' && fill && border && stroke) {
+        const disc = over(fill, bg);
+        const ring = over(border, bg);
+        parts.ringOuter = ratio(ring, bg);
+        parts.ringInner = ratio(ring, disc);
+        parts.check = ratio(over(stroke, disc), disc);
+        pass = parts.check >= 3 && Math.max(parts.ringOuter, parts.ringInner) >= 3;
+      } else if (state === 'done' && fill && stroke) {
+        const disc = over(fill, bg);
+        parts.fill = ratio(disc, bg);
+        parts.check = ratio(over(stroke, disc), disc);
+        pass = parts.check >= 3;
+      }
+      out.push({
+        state,
+        label: cell.getAttribute('aria-label') ?? '',
+        tone: Array.from(cell.classList).find((c) => c.startsWith('tone-')) ?? '',
+        on,
+        parts,
+        pass,
+      });
+    }
+    return out;
+  });
+}
+
+/**
+ * Soft assertion over auditWeekMarks: every measured mark passes its rule, and each state listed in
+ * `require` was actually on screen (so the check cannot pass by measuring nothing).
+ */
+export async function expectWeekMarkContrast(
+  page: Page,
+  where: string,
+  require: readonly MarkState[] = [],
+): Promise<MarkContrast[]> {
+  const marks = await auditWeekMarks(page);
+  for (const state of require) {
+    expect.soft(marks.filter((m) => m.state === state).length, `${where}: ${state} marks measured`).toBeGreaterThan(0);
+  }
+  expect
+    .soft(
+      marks.filter((m) => !m.pass),
+      `${where}: Week marks under 3:1 (WCAG 1.4.11)`,
+    )
+    .toEqual([]);
+  return marks;
+}
+
+/* ---------- Progress heatmap marks: non-text contrast (WCAG 1.4.11, ≥ 3:1) ---------- */
+
+export type HeatState = 'done' | 'bonus' | 'missed' | 'pending';
+
+export interface HeatContrast {
+  state: HeatState;
+  /** The heatmap's accessible summary (its card's tracker). */
+  label: string;
+  /** The heatmap's tone class, e.g. "tone-ochre". */
+  tone: string;
+  /** The mark against the card surface behind it: the fill (done) or the inset ring (bonus, missed, pending). */
+  ratio: number;
+}
+
+/**
+ * Measures every marked cell of the Progress heatmaps against the surface behind the grid (the tracker card,
+ * translucent layers composited): done → the tone fill; bonus → the round 2px tone ring (polish V4: a ring,
+ * no fill); missed → the 1px --line-strong hairline; pending → today's 1.5px ember outline.
+ */
+export async function auditHeatmapMarks(page: Page): Promise<HeatContrast[]> {
+  await settleAnimations(page);
+  return page.evaluate(() => {
+    interface C {
+      r: number;
+      g: number;
+      b: number;
+      a: number;
+    }
+    const parse = (css: string): C | null => {
+      const m = /^rgba?\(([^)]+)\)$/.exec(css.trim());
+      const inner = m?.[1];
+      if (inner === undefined) return null;
+      const [r, g, b, a] = inner.split(/[\s,/]+/).filter(Boolean).map(Number);
+      if (r === undefined || g === undefined || b === undefined || [r, g, b].some(Number.isNaN)) return null;
+      return { r, g, b, a: a === undefined || Number.isNaN(a) ? 1 : a };
+    };
+    const over = (top: C, under: C): C => ({
+      r: top.r * top.a + under.r * (1 - top.a),
+      g: top.g * top.a + under.g * (1 - top.a),
+      b: top.b * top.a + under.b * (1 - top.a),
+      a: 1,
+    });
+    const lin = (v: number): number => {
+      const s = v / 255;
+      return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    const lum = (c: C): number => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+    const ratio = (x: C, y: C): number => {
+      const lx = lum(x);
+      const ly = lum(y);
+      return Math.round(((Math.max(lx, ly) + 0.05) / (Math.min(lx, ly) + 0.05)) * 100) / 100;
+    };
+    const bodyBg = parse(getComputedStyle(document.body).backgroundColor) ?? { r: 255, g: 255, b: 255, a: 1 };
+    /** The opaque colour behind `from` and its ancestors (the cell's own background is the mark, so it starts above it). */
+    const behind = (from: HTMLElement | null): C => {
+      const layers: C[] = [];
+      let base: C | null = null;
+      for (let a: HTMLElement | null = from; a; a = a.parentElement) {
+        const c = parse(getComputedStyle(a).backgroundColor);
+        if (c && c.a > 0) {
+          if (c.a >= 1) {
+            base = c;
+            break;
+          }
+          layers.push(c);
+        }
+      }
+      let bg = base ?? bodyBg;
+      for (let i = layers.length - 1; i >= 0; i -= 1) {
+        const layer = layers[i];
+        if (layer) bg = over(layer, bg);
+      }
+      return bg;
+    };
+
+    const out: Array<{ state: 'done' | 'bonus' | 'missed' | 'pending'; label: string; tone: string; ratio: number }> = [];
+    for (const cell of Array.from(document.querySelectorAll<HTMLElement>('.heat__cell'))) {
+      const state = (['done', 'bonus', 'missed', 'pending'] as const).find((s) => cell.classList.contains(`is-${s}`));
+      if (!state) continue;
+      const cs = getComputedStyle(cell);
+      let mark: C | null = null;
+      if (state === 'done') mark = parse(cs.backgroundColor);
+      else {
+        const shadow = /rgba?\([^)]*\)/.exec(cs.boxShadow);
+        mark = shadow ? parse(shadow[0]) : null;
+      }
+      if (!mark) continue;
+      const bg = behind(cell.parentElement);
+      const heat = cell.closest('.heat');
+      out.push({
+        state,
+        label: heat?.getAttribute('aria-label') ?? '',
+        tone: Array.from(heat?.classList ?? []).find((c) => c.startsWith('tone-')) ?? '',
+        ratio: ratio(over(mark, bg), bg),
+      });
+    }
+    return out;
+  });
+}
+
+/**
+ * Soft assertion over auditHeatmapMarks: each state in `judged` was on screen and every such mark reaches 3:1.
+ * States left out of `judged` are measured and returned (for the report) but not asserted.
+ */
+export async function expectHeatmapMarkContrast(
+  page: Page,
+  where: string,
+  judged: readonly HeatState[] = ['done', 'bonus'],
+): Promise<HeatContrast[]> {
+  const marks = await auditHeatmapMarks(page);
+  for (const state of judged) {
+    expect.soft(marks.filter((m) => m.state === state).length, `${where}: ${state} marks measured`).toBeGreaterThan(0);
+  }
+  expect
+    .soft(
+      marks.filter((m) => judged.includes(m.state) && m.ratio < 3),
+      `${where}: heatmap marks under 3:1 (WCAG 1.4.11)`,
+    )
+    .toEqual([]);
+  return marks;
+}

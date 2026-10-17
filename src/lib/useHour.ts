@@ -7,10 +7,10 @@ export function msUntilNextHour(now: Date = new Date()): number {
 }
 
 /**
- * The current local hour (0–23). Re-evaluated at every full hour (timer to the next one) and
- * whenever the page becomes visible or focused again (iOS suspends timers in the background), so
- * copy that depends on the time of day — morning / afternoon / evening — follows the clock while
- * the view stays open.
+ * The current local hour (0–23). Re-evaluated when the view mounts, at every full hour (timer to the
+ * next one) and whenever the page becomes visible or focused again (iOS suspends timers in the
+ * background), so copy that depends on the time of day — morning / afternoon / evening — follows the
+ * clock while the view stays open.
  */
 export function useHour(): number {
   const [hour, setHour] = useState(() => new Date().getHours());
@@ -34,7 +34,9 @@ export function useHour(): number {
       if (document.visibilityState === 'visible') refresh();
     }
 
-    arm();
+    // refresh(), not just arm(): the initial state was read at render, and the hour can turn between
+    // the render and this effect; the timer alone would keep the old hour for a full hour.
+    refresh();
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', refresh);
     window.addEventListener('pageshow', refresh);

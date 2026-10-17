@@ -45,7 +45,7 @@ export function habitColorSoftVar(color: HabitColor): string {
   return `var(--c-${color}-soft)`;
 }
 
-/** 'tone-terracotta' — the base.css helper class that sets --tone / --tone-soft. */
-export function toneClass(color: HabitColor): string {
+/** 'tone-terracotta' (or 'tone-ember') — the base.css helper class that sets --tone / --tone-soft. */
+export function toneClass(color: HabitColor | 'ember'): string {
   return `tone-${color}`;
 }

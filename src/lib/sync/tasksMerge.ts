@@ -1,6 +1,7 @@
 import { isDateKey } from '../dates';
 import { newId } from '../ids';
 import { sortTasks } from '../tasks';
+import { clampText } from '../text';
 import { TASK_NOTE_MAX, TASK_TITLE_MAX, isTimeString, isValidId, type DateKey, type Task } from '../types';
 import type { LocalTasks, RemoteTask, TaskPushOp, TasksMergeResult } from './types';
 
@@ -57,14 +58,14 @@ const TOMBSTONE_FIELDS: Readonly<Omit<Task, 'id'>> = {
 
 /**
  * The task fields of a raw document, or null when it is not a usable task. Required: a non-blank title
- * (trimmed, capped) and a real `date`. Optional fields that are damaged are dropped rather than failing
- * the whole task (a bad `time` loses the time, not the task); `createdAt` falls back to `date`; `doneAt`
- * is kept only while `done`.
+ * (trimmed and capped by clampText, as the store does) and a real `date`. Optional fields that are
+ * damaged are dropped rather than failing the whole task (a bad `time` loses the time, not the task);
+ * `createdAt` falls back to `date`; `doneAt` is kept only while `done`.
  */
 function parseTaskFields(id: string, data: Record<string, unknown>): Task | null {
   const { title, note, date, time, done, doneAt, createdAt } = data;
   if (typeof title !== 'string') return null;
-  const trimmedTitle = title.trim().slice(0, TASK_TITLE_MAX);
+  const trimmedTitle = clampText(title, TASK_TITLE_MAX);
   if (trimmedTitle === '') return null;
   if (!isDateKey(date)) return null;
   const isDone = done === true;
@@ -76,7 +77,7 @@ function parseTaskFields(id: string, data: Record<string, unknown>): Task | null
     done: isDone,
     createdAt: isDateKey(createdAt) ? createdAt : date,
   };
-  const trimmedNote = typeof note === 'string' ? note.trim().slice(0, TASK_NOTE_MAX) : '';
+  const trimmedNote = typeof note === 'string' ? clampText(note, TASK_NOTE_MAX) : '';
   if (trimmedNote) task.note = trimmedNote;
   if (isTimeString(time)) task.time = time;
   if (isDone && isDateKey(doneAt)) task.doneAt = doneAt;
@@ -271,9 +272,12 @@ export function sameTasks(a: LocalTasks, b: LocalTasks): boolean {
   if (a.tasks.length !== b.tasks.length) return false;
   const byId = new Map(b.tasks.map((t) => [t.id, t] as const));
   if (byId.size !== b.tasks.length) return false;
+  // Every id of `a` must be distinct too, or a duplicate in `a` could stand in for a task it lacks.
+  const seen = new Set<string>();
   for (const t of a.tasks) {
     const other = byId.get(t.id);
-    if (!other || !sameTask(t, other)) return false;
+    if (!other || seen.has(t.id) || !sameTask(t, other)) return false;
+    seen.add(t.id);
   }
   const ta = new Set(a.deletedTaskIds);
   const tb = new Set(b.deletedTaskIds);

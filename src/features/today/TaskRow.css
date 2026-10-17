@@ -1,0 +1,77 @@
+/* One task line on Today (SPEC §14.5). Hairline below; the list supplies the opening hairline. */
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-height: 56px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The 36px square sits in a 44px hit box; pull it out so the square meets the content edge. */
+.task-row__check {
+  display: inline-flex;
+  flex: none;
+  margin-left: -4px;
+}
+
+/* The text button fills the row. Its left padding lands the title at the same x as a tracker's name. */
+.task-row__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 6px 8px 6px 14px;
+  margin-right: -8px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  transition: background-color 160ms ease;
+}
+
+.task-row__body:active {
+  background: var(--surface-2);
+}
+
+.task-row__title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  transition: color 200ms ease;
+}
+
+.task-row__meta {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* "From Tue 14 Oct" — carried over from an earlier day. */
+.task-row__from {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+/* Done: quiet text with a soft strike; the Check stays vivid. The title keeps --ink-2 (≥4.5:1 in
+   both themes) rather than --ink-3, which only clears the bar for non-text marks like the strike. */
+.task-row.is-done .task-row__title {
+  color: var(--ink-2);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+}
+
+.task-row.is-done .task-row__from {
+  color: var(--ink-2);
+}

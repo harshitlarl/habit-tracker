@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import useStore from '../../lib/store';
 import type { DateKey } from '../../lib/types';
 import { diffDays, startOfWeekKey } from '../../lib/dates';
@@ -20,12 +20,23 @@ import './ProgressView.css';
 const FIRST_TRACKER_INDEX = 3;
 const MAX_STAGGER_INDEX = 10;
 
+interface EditorState {
+  open: boolean;
+  habitId?: string;
+}
+
 export function ProgressView() {
   const habits = useStore((s) => s.habits);
   const completions = useStore((s) => s.completions);
   const unarchiveHabit = useStore((s) => s.unarchiveHabit);
   const today = useToday();
-  const [editorOpen, setEditorOpen] = useState(false);
+  // The editor sheet, hosted here the way ManageView hosts it: a card's header (active or archived)
+  // opens it for that tracker; the empty state opens it for a new one. Stable callbacks keep the
+  // memoised cards from re-rendering when it opens or closes.
+  const [editor, setEditor] = useState<EditorState>({ open: false });
+  const openNew = useCallback((): void => setEditor({ open: true }), []);
+  const openEdit = useCallback((habitId: string): void => setEditor({ open: true, habitId }), []);
+  const closeEditor = useCallback((): void => setEditor((prev) => ({ ...prev, open: false })), []);
 
   const active = useMemo(() => activeHabits(habits), [habits]);
   const archived = useMemo(() => archivedHabits(habits), [habits]);
@@ -66,7 +77,7 @@ export function ProgressView() {
           title="Your history starts here."
           body="Add a tracker and check it off for a few days. Streaks, weekly rates and a twelve-week map will fill this page."
           action={
-            <Button size="lg" icon={<Icon name="plus" size={20} />} onClick={() => setEditorOpen(true)}>
+            <Button size="lg" icon={<Icon name="plus" size={20} />} onClick={openNew}>
               Add your first tracker
             </Button>
           }
@@ -74,7 +85,12 @@ export function ProgressView() {
       ) : (
         <>
           <div className="progress__overall rise" style={{ '--i': 0 }}>
-            <Stat size="lg" value={overall.perfect} label="Perfect days" sub="in a row" />
+            <Stat
+              size="lg"
+              value={overall.perfect}
+              label={plural(overall.perfect, 'Perfect day')}
+              sub="in a row"
+            />
             <Stat size="lg" value={overall.total} label="Completions" sub="all time" />
             <Stat
               size="lg"
@@ -112,6 +128,7 @@ export function ProgressView() {
                     today={today}
                     weeks={weeks}
                     index={Math.min(FIRST_TRACKER_INDEX + i, MAX_STAGGER_INDEX)}
+                    onEdit={openEdit}
                   />
                 ))}
               </div>
@@ -125,12 +142,13 @@ export function ProgressView() {
               today={today}
               defaultOpen={active.length === 0}
               onRestore={unarchiveHabit}
+              onEdit={openEdit}
             />
           ) : null}
         </>
       )}
 
-      <HabitEditor open={editorOpen} onClose={() => setEditorOpen(false)} />
+      <HabitEditor open={editor.open} habitId={editor.habitId} onClose={closeEditor} />
     </section>
   );
 }

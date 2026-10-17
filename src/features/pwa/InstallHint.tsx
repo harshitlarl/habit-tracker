@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import useStore from '../../lib/store';
 import { isIOS, isStandalone } from '../../lib/platform';
+import { isSyncConfigured } from '../../lib/sync/firebase';
 import { prefersReducedMotion } from '../../lib/useReducedMotion';
 import { Icon } from '../../components/Icon';
 import { cx } from '../../components/cx';
@@ -10,7 +11,10 @@ const EXIT_MS = 200;
 
 /**
  * Slim "Add to Home Screen" banner, rendered by App directly above the tab bar. Shows only in
- * iOS Safari (never once installed) until dismissed; the dismissal persists in settings.
+ * iOS Safari (never once installed) until dismissed; the dismissal persists in settings. While it
+ * shows, Settings leaves out its own "Install on iPhone" card: one prompt at a time. Both say that
+ * the Home Screen app starts with its own, empty copy of the data (iOS gives it separate storage);
+ * the banner in one short clause so it stays three lines on a phone, the card in full.
  */
 export function InstallHint() {
   const dismissed = useStore((s) => s.settings.installHintDismissed);
@@ -44,7 +48,8 @@ export function InstallHint() {
               <Icon name="share" size={16} />
               Share
             </span>
-            , then Add to Home Screen
+            , then Add to Home Screen. It starts empty: export a backup first
+            {isSyncConfigured() ? ', or sign in' : ''}.
           </p>
           <button
             type="button"

@@ -2,6 +2,34 @@
   margin-top: var(--s-2);
 }
 
+/* The gear, top right: 44px round icon button, the same family as Today's "+" and Week's ‹ ›.
+   Settings lives below the tracker list; this brings it into view. */
+.manage__settings {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  transition:
+    transform 120ms ease,
+    background-color 160ms ease;
+}
+
+.manage__settings:active {
+  transform: scale(0.94);
+  background: var(--surface-2);
+}
+
+@media (hover: hover) {
+  .manage__settings:hover {
+    background: var(--surface-2);
+  }
+}
+
 /* ---------- Tracker list ---------- */
 .tracker-list {
   padding: 0;
@@ -86,6 +114,11 @@
 .manage-row__note {
   font-size: 14px;
   line-height: 1.3;
+  color: var(--ink-2);
+}
+
+/* The row opens the editor: say so the iOS way. */
+.manage-row__chevron {
   color: var(--ink-2);
 }
 

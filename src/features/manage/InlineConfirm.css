@@ -26,7 +26,7 @@
   margin-top: var(--s-4);
 }
 
-/* Actions share the row by content width; a long label ("Delete everything") grows or wraps,
+/* Actions share the row by content width; a long label ("Sign out and reset") grows or wraps,
    never spills past the pill's padding. */
 .confirm__actions > .btn {
   flex: 1 1 auto;

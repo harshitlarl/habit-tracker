@@ -36,6 +36,14 @@ Non-goals: multi-user, cloud sync, push notifications, timers.
   Dev deps: vite, @vitejs/plugin-react, typescript, @types/react, @types/react-dom, vite-plugin-pwa,
   vitest, @playwright/test, sharp (icon rasterising script). Anything else needs a documented reason.
 
+*Deviations (as built):*
+- Fonts: the three Latin woff2 files (Fraunces full normal + italic, Hanken Grotesk) are copied from the Fontsource packages into
+  `public/fonts/` (`npm run fonts`), declared in `src/styles/fonts.css` and preloaded by `index.html` — not the packages' CSS
+  (nine files); same families, axes and italics, still self-hosted and precached.
+- PWA: still `autoUpdate`, but `src/pwa.ts` reloads into a new build only at a calm moment (no sheet open, no field in use) and asks
+  for one on each return to the foreground, at most hourly; the Firebase chunk is runtime-cached (`firebase-sdk`), not precached.
+- Node: `engines` is `^22.12.0 || ^24.0.0 || >=26.0.0` (vitest 5's range) rather than ≥ 20; CI and Netlify build on Node 24.
+
 ## 3. Views
 
 Bottom tab bar with four tabs: **Today**, **Week**, **Progress**, **Trackers**. The current `view`
@@ -57,6 +65,12 @@ is React state in `App.tsx`. No router. Content column max-width 560px, centred,
   session) and the motivation line switches to an `allDone` message.
 - Empty state (no active trackers): warm copy + primary button "Add your first tracker" → opens `HabitEditor`.
 - Floating "+" button (bottom-right, above the tab bar) opens `HabitEditor` for a new tracker.
+  *Deviation (as built, phase 3):* the "+" is a 44px round "Add tracker" button in the Today header, beside the ring, shown once a
+  tracker exists (the empty state's "Add your first tracker" covers the first one). A fixed corner "+" shared its x-band with every
+  row's Check and caught taps meant for a check.
+
+*Deviations (as built, polish):* "Not scheduled today" opens by default on a day with nothing due and then stays as the owner leaves
+it for the session; below 360px the weekday steps down to 34px so it clears the ring and the "+"; the ring has `aria-valuetext`.
 
 ### 3.2 Week
 - Header: week range ("13 – 19 Oct") with ‹ › buttons, and a "This week" pill when not on the current week.
@@ -70,6 +84,10 @@ is React state in `App.tsx`. No router. Content column max-width 560px, centred,
   "18 of 21 done · 86%", from `weekSummary` + `getWeekSummaryMessage`.
 - Empty state if there are no trackers.
 
+*Deviations (as built, polish):* a bonus completion is the disc outlined in the habit tone on the paper fill, with a tone check, and
+the unscheduled dash is a 12×2px `--line-strong` mark at full opacity (the reduced-opacity fill and the faint dash fell below 3:1);
+tappable cells carry `aria-pressed`, so their labels keep only the name, the date and a bonus / not scheduled / upcoming suffix.
+
 ### 3.3 Progress
 - Overall section first: perfect-day streak (consecutive days where everything due was done), total
   completions, this week's rate. Then a bar chart of the last 8 weeks' completion rate (ember bars, labelled
@@ -78,6 +96,9 @@ is React state in `App.tsx`. No router. Content column max-width 560px, centred,
   7 columns Mon…Sun (aligned with the Week view), rows = weeks (oldest at the top, current week at the bottom);
   done → habit colour; scheduled-but-not-done → hairline outline; unscheduled / before createdAt / future → empty.
 - Archived trackers at the bottom in a collapsed section with their final stats and a "Restore" action.
+
+*Deviations (as built, polish):* each card's header is an "Edit <name>" button that opens `HabitEditor`, as is each archived row
+beside its Restore; the heatmap marks a bonus day with a round tone ring and no fill.
 
 ### 3.4 Trackers (manage + settings)
 - List of active trackers; tap to edit; reorder with ▲ ▼ buttons (reliable on iOS, no drag libraries).
@@ -91,6 +112,16 @@ is React state in `App.tsx`. No router. Content column max-width 560px, centred,
   `momentum-backup-YYYY-MM-DD.json`); Import data (file input → validate → in-app confirm → replace);
   Reset all data (in-app confirm). An "Install on iPhone" card with the Share → Add to Home Screen steps,
   shown only when not running standalone (`isStandalone()` from `src/lib/platform.ts`). Version/about line.
+
+*Deviations (as built, polish):*
+- Gear: a 44px "Settings" icon button in the Trackers header scrolls to the Settings heading and focuses it.
+- Emoji grid: the first 16 of the 48 options plus the selected one, with a "More emoji" / "Fewer emoji" chip for the rest.
+- `HabitEditor`: Save sits in a sticky footer and stays enabled (a submit marks every error and focuses the first invalid field);
+  it turns off only when the tracker was deleted on another device, which a status line says. An archived tracker offers Restore
+  in place of Archive.
+- Settings order: Appearance → Your data → Sync across devices → Install on iPhone → Reset this device (its own last card and status
+  line) → about line. The install card also stays hidden while the `InstallHint` banner shows, and "Your data" says "This device is
+  not saving changes right now — export a backup." while storage refuses writes.
 
 ## 4. Data model — `src/lib/types.ts` (exact)
 
@@ -131,8 +162,14 @@ Pure selectors in `src/lib/selectors.ts`: `activeHabits(habits)` (not archived, 
 (= `isScheduled(h, dateKey)`), `habitColorVar(color)` → `'var(--c-terracotta)'`.
 
 Hooks: `useToday()` in `src/lib/useToday.ts` → the current `DateKey`, re-evaluated at local midnight (timer to
-next midnight) and on `visibilitychange`/`focus`. `useReducedMotion()` in `src/lib/useReducedMotion.ts`.
+next midnight) and on `visibilitychange`/`focus`. As built it also re-reads the clock when it mounts (a midnight can fall between the
+render and the effect) and on `pageshow`; `useHour()` in `src/lib/useHour.ts` (the hour behind the time-of-day copy) does the same,
+at every full hour. `useReducedMotion()` in `src/lib/useReducedMotion.ts`.
 `src/lib/platform.ts`: `isIOS()`, `isStandalone()`.
+
+*Deviation (as built):* additive store exports: `NOT_A_BACKUP` ("This file is not a Momentum backup.", for a file without a numeric
+`version`, `habits` or `completions`; a real unknown version still reads "Unsupported backup version: N.") and the `useStorageHealth`
+store (`{ error, unavailable }`, also behind `lastStorageError()`) that drives the Settings warning.
 
 ## 6. Date utilities — `src/lib/dates.ts` (exact)
 
@@ -232,6 +269,9 @@ bottom with a drag-handle bar, `--r-lg` top corners, blurred backdrop.
 Avoid: purple gradients, Inter/Roboto/system fonts for display text, grids of drop-shadowed cards,
 emoji in headlines, exclamation-heavy copy, generic "dashboard" chrome.
 
+*Deviation (as built, polish):* `:focus-visible` also draws a 2px `--surface` gap (box-shadow) under the ember outline, so the ring
+keeps 3:1 on tinted fills such as today's band.
+
 ## 10. Shared components — `src/components/` (built in Foundation, used by everyone)
 
 - `Check` `{ checked: boolean; onChange(): void; tone: HabitColor; size?: number; disabled?: boolean; label: string }`
@@ -248,6 +288,10 @@ emoji in headlines, exclamation-heavy copy, generic "dashboard" chrome.
   'chevronRight'|'check'|'flame'|'trash'|'archive'|'restore'|'edit'|'close'|'share'|'up'|'down'|'download'|'upload'|'gear'`
   — inline SVG, `currentColor`, stroke 1.75, round caps.
 - `Confetti` `{ fire: boolean; colors: string[] }` — canvas overlay, self-removing.
+
+*Deviation (as built):* `Ring` also takes `label` and `valueText` (`aria-label` / `aria-valuetext`). `Sheet` remembers its opener in
+the commit where `open` turns true and focuses it again after unmounting, ignores taps while it slides out, and arms Escape, the Tab
+trap, the scroll lock and its focus step in a layout effect, in the commit that inserts the panel (§14.10).
 
 ## 11. File ownership (parallel work — never edit files you don't own)
 
@@ -371,6 +415,11 @@ deleted: boolean; updatedAt?: unknown }`, `PushOp` (`setHabit` | `addCompletion`
   and return; else `setTimeout(0)` → `loadFirebase` → `onAuthStateChanged`: user → `setUser`, `startSync(uid)`;
   null → `stopSync()`, `setUser(null)`, status `'signed-out'`. Never throws, never blocks rendering.
 
+*Deviations (as built, polish):* `initSync` loads the SDK at launch only when the device has a session to restore
+(`momentum-sync-session` in `baseline.ts`, or a phase-2 install's saved baseline); otherwise the Sync card's Sign in / Create account
+loads it. A sign-out whose queued writes were not confirmed (offline, flush timeout) keeps that account's baseline, so the next sign-in
+replays them three-way; another account's sign-in drops it.
+
 ### 13.6 UI — Settings → "Sync across devices" (`src/features/manage/SyncSection.tsx` + `.css`)
 - Hidden when `!isSyncConfigured()`.
 - Signed out: one-line explainer ("Back up and sync your trackers across your devices. Only you can read your data."),
@@ -384,6 +433,15 @@ deleted: boolean; updatedAt?: unknown }`, `PushOp` (`setHabit` | `addCompletion`
 - Existing "Reset all data" → "Reset this device" (signs out first when signed in; the confirmation says so).
   Import confirmation copy mentions "and syncs to your account" when signed in.
 
+*Deviations (as built, polish):*
+- Signed out, the card shows the explainer and one subtle 44px "Sign in or create account" button; the form (unchanged) opens on that
+  tap and stays open once opened in the session, while a request runs and while a message shows.
+- Settings card order: Appearance → Your data → Sync across devices → Install on iPhone → Reset this device (see §3.4).
+- Every reset confirmation asks "Reset this device?": "Reset" signed out; signed in, "Sign out and reset", or "Reset anyway" when the
+  account may not hold every change yet.
+- Signed in, the import confirmation says "Trackers and tasks not in this backup are deleted from your account and every signed-in
+  device, and check-ins made since it was exported are removed. There is no undo." in place of "and syncs to your account".
+
 ### 13.7 Hosting files
 - `firebase.json` (hosting: public "dist", ignore, rewrites `**` → `/index.html`, headers: `/sw.js`, `/index.html`,
   `/manifest.webmanifest` → `Cache-Control: no-cache`; `/assets/**` → `public, max-age=31536000, immutable`;
@@ -395,6 +453,10 @@ deleted: boolean; updatedAt?: unknown }`, `PushOp` (`setHabit` | `addCompletion`
   `deploy:rules` = `firebase deploy --only firestore:rules`. Live URLs: https://momentum-harshitlarl.web.app and
   https://harshitlarl.github.io/habit-tracker/ (GitHub Actions, `BASE_PATH=/habit-tracker/`).
 
+*Deviation (as built, polish):* the three host configs also send `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `X-Frame-Options: DENY` and a `Permissions-Policy` that turns off camera, microphone and
+geolocation (no CSP yet), and cache `/fonts/**` for a day like the icons. GitHub Pages cannot send headers.
+
 ### 13.8 Tests
 - Unit (vitest, no Firebase SDK needed): `parseRemoteDoc` (good doc, missing fields, wrong types, extra keys);
   `remoteToLocal`; `mergeSnapshots` — local-only, remote-only, both (completions union, remote fields win), tombstone on
@@ -404,7 +466,9 @@ deleted: boolean; updatedAt?: unknown }`, `PushOp` (`setHabit` | `addCompletion`
   `exportData` includes `deletedIds`.
 - e2e (Playwright, WebKit iPhone 14): with env configured the sign-in form renders in Settings and nothing else
   changes; a real-backend spec signs up a throwaway account, syncs between two contexts in realtime, deletes cloud
-  data, and always cleans the account up (Identity Toolkit REST `accounts:delete`).
+  data, and always cleans the account up (Identity Toolkit REST `accounts:delete`). As built (§14.10 Tests): every Node-side call
+  is retried, and the credentials are recorded before sign-up in a git-ignored, owner-only ledger (`e2e/.pending-cleanup/`) that
+  the next run sweeps, so a worker killed mid-run cannot leave the account behind for good.
 
 ### 13.9 Phase-2 file ownership (parallel work — never edit files you don't own)
 - **sync-core**: `src/lib/store.ts`, `src/lib/types.ts`, `src/lib/selectors.ts`, `src/lib/sync/merge.ts`, `src/lib/__tests__/**`.
@@ -419,7 +483,8 @@ deleted: boolean; updatedAt?: unknown }`, `PushOp` (`setHabit` | `addCompletion`
 Trackers are recurring. A **task** is a one-time, dated item: "Tuesday — renew the gym membership", "Thursday 3:00 pm — meeting
 with mentor". Tasks live next to trackers on Today, appear under their day in Week, carry over while undone, and sync like
 everything else. They never touch the progress ring, streaks, confetti or motivation copy (those stay about habits).
-Vocabulary in the UI: "task" / "tasks" (never "to-do", never "plan"). The FAB keeps creating trackers.
+Vocabulary in the UI: "task" / "tasks" (never "to-do", never "plan"). Adding a tracker stays a separate action (the
+Today add-tracker control, see §3.1 and its deviation note); the Tasks section has its own add button.
 
 ### 14.2 Data model — `src/lib/types.ts` (IMPLEMENTED)
 ```ts
@@ -523,7 +588,8 @@ import on old builds, which ignore the two keys). `src/lib/tasks.ts` re-exports 
   state machine as habits (first contact → `mergeTasks`; afterwards → `mergeTasksWithBase` against the baseline at launch and the
   last pushed state within the session; cache snapshots before the first server view handled as for habits). The two channels
   share the write batches (both collections live under `users/{uid}`, so one batch may carry habit and task ops), the
-  `applyingRemote` guard and the store subscription; a rejected batch rolls BOTH channels back. Writes: `setTask` →
+  `applyingRemote` guard and the store subscription; a rejected batch rolls back each channel it wrote (both, for a mixed
+  batch). Writes: `setTask` →
   `set(ref, { id, title, note: note ?? deleteField(), date, time: time ?? deleteField(), done, doneAt: doneAt ?? deleteField(),
   createdAt, updatedAt: serverTimestamp() }, { merge: true })` (never writes `deleted`); `tombstoneTask` → `set(ref, { deleted:
   true, updatedAt: serverTimestamp() }, { merge: true })`. Every task document goes through `parseRemoteTask`.
@@ -545,3 +611,117 @@ import on old builds, which ignore the two keys). `src/lib/tasks.ts` re-exports 
   (only the `.tone-ember` rule), `src/lib/selectors.ts` (only widening `toneClass`).
 - **tasks-week**: `src/features/week/**`.
 - Integration (single owner afterwards): `src/features/manage/**` copy (reset + import preview mention tasks), README, SPEC deviations.
+
+### 14.10 Phase-3 deviations and decisions (as built)
+Recorded by the integration owner; each file's header comment carries the same note where it applies.
+
+**Today (§14.5)**
+- A done task's title is set in `--ink-2` with the 1px strike drawn in `--ink-3`, on Today and on Week alike: `--ink-3` is 2.7:1 on
+  paper and the house rule is ≥ 4.5:1 for text (base.css applies the same rule to small-caps labels).
+- A carried-over task checked off today stays listed in the carried group, checked, until midnight — so a late check-off can be
+  undone and the day's work stays visible. `carriedOver`/`tasksForToday` are unchanged (open items only); the pure helper
+  `carriedOverDone(tasks, today)` in `src/lib/tasks.ts` supplies the rule (`done && date < today && doneAt === today`).
+- Done tasks sink to the bottom of their group on Today, as specified; on Week they keep their chronological place within the day
+  (the ledger never reorders under the finger). Two deliberate behaviours, not one.
+- The square `Check` is 36px on Today and 32px on Week, matching each view's scale. Both rows share the same anatomy but stay two
+  components (`today/TaskRow.tsx`, the row inside `week/WeekTasks.tsx`) because their alignment rules differ.
+- Today's task rows rise in with the `--i` stagger only at the section's first paint; a row that mounts later (a task just saved, one
+  moving between the carried and today groups, a new day's list) fades in instead. Each row drops its entrance class once it has
+  played: WebKit restarts a class-driven animation whenever React re-inserts a moved row (a done task sinking), so it blinked.
+- Row buttons on Today and Week are named in full — "Mentor meeting, 3:00 PM, Bring the portfolio, edit task", plus "from Yesterday"
+  on a carried row or "still open" on Week where the meta line shows it (`taskRowLabel` in `src/features/tasks/taskModel.ts`):
+  the "·" between the meta parts is aria-hidden, and the adjacent inline text would otherwise run "PM" into the note.
+
+**Task editor (§14.7)**
+- Save stays enabled and the inline errors ("Give it a title.", "Pick a date.") appear on a submit attempt, with focus moved to
+  the first invalid field; the title error then shows and hides live. HabitEditor (polish) now also keeps Save enabled and marks
+  every error on submit, but it still shows its name error on blur as well. Reason: the task sheet is short, so an error line
+  appearing while the autofocused title blurs would grow the panel upward between pointer-down and pointer-up, and the Close
+  button (or the backdrop) would miss the very tap that caused the blur.
+- Quick-date chips use the default ink-filled selected style (`Chip.tone` stays `HabitColor`); the ember tone is reserved for the
+  Check. The eight chips wrap to up to three rows on a 375px phone (no horizontal scroller).
+- Delete is the `danger` Button variant, full width, labelled "Delete task"; the inline question reads "Delete “<title>”?" with
+  "There is no undo."
+- A new task's untouched date follows `defaultDate` across midnight: until a chip or the native field is used, the form derives the
+  date on every render (`formDate` in `src/features/tasks/taskModel.ts`), so a sheet left open past midnight saves to the new day.
+- A date outside the quick row (an existing task's, or one that midnight moved the row past) shows the native date field, and the
+  last chip, selected, writes that date out: "Wed 14 Oct" (`customDateLabel`), never a bare weekday name, which beside the quick
+  chip "Wed 21" read as the coming one.
+- "Deleted on another device" guard, as in HabitEditor: when a tombstone from another device removes the task while its sheet is
+  open, a status line says "This task was deleted on another device.", Save and Delete turn off (Enter saves nothing either), the
+  typed text stays in the fields, and nothing is re-created under a new id.
+- Save and delete (and, in HabitEditor, archive and restore) run once per open session: a double tap on Save adds one task.
+
+**Week (§14.6, and §3.2)**
+- With no trackers the Week header still shows the ‹ › navigation and the "This week" pill, so tasks can be planned in other weeks
+  before the first tracker exists; the EmptyState copy and button are unchanged. The day groups fade with the week while the head
+  and the editor stay mounted, so a week change or midnight never closes a sheet mid-edit.
+- Day groups present at first paint continue the grid's rise stagger (`--i` from `rows.length`); a group that appears later (a task
+  just saved) fades in instead of waiting for a cascade that already played.
+- Focus return (§14.7) is handled by the sections themselves on both Today and Week: the control that opened the editor is remembered
+  with the task it was opened for, and focused after the close commits. A row that remounted meanwhile (an edit moved it to another
+  day of the shown week, or between Today's carried and today groups) is found again by its task id; "Add task" takes focus only
+  when the row is gone — deleted, or moved to a day the section does not show. iOS and WebKit do not focus buttons on tap, so the
+  Sheet's own restore to the previously focused element is not enough on the phone.
+- Shared `Sheet` fix found by the phase-3 e2e: the 20ms "move focus into the dialog" step armed at mount is now cancelled when the
+  sheet starts closing. Closed within those 20ms (Escape right after opening), it used to fire after the opener had restored focus and
+  pull it into the departing panel, leaving focus on `<body>`. Applies to HabitEditor as well.
+- A closing `Sheet` takes no more taps: `closing` is derived from `open` in the very render that closes it (a state flag set a
+  render later left a few milliseconds in which a quick second tap still reached Save), the departing panel has
+  `pointer-events: none`, and its backdrop swallows the press without moving focus or closing again. Applies to every sheet.
+- The `Sheet` arms what it does while open (its Escape-stack entry and keydown listener, the Tab trap, the scroll lock with
+  `html[data-sheet-open]`, the deferred focus step) in a layout effect, in the commit that inserts the panel. As a passive effect a
+  commit later, an Escape pressed the moment a sheet appeared was lost and the sheet stayed open (QA round 2; guarded by the e2e
+  test "Escape pressed the moment a sheet appears still closes it"). Applies to every sheet.
+
+**Store (§14.3)**
+- `updateTask`: `note`/`time` clear with `undefined` or `''` only; an invalid non-empty `time` (e.g. `'25:00'`) is ignored and the
+  existing time kept, as a blank title or an invalid date is. The editor's `<input type="time">` can only produce a valid value or `''`.
+- Hydration repair: two stored task records under the same cloud-unsafe id count as one duplicate — the first is re-keyed to a fresh
+  uuid, the second dropped — exactly as the tracker path does.
+- Capped task titles and notes (and tracker names, emoji and notes in hydration repair and the cloud parsers) are trimmed again
+  after the cut and never split a surrogate pair (`clampText` in `src/lib/text.ts`), so a capped value re-imports unchanged.
+
+**Sync (§14.8)**
+- The baseline is saved only when the reconciling collection's server view carries no pending writes AND the other collection's last
+  reconciled server view carried none either; both acknowledged id sets are saved with it. A collection whose last server view had
+  pending writes therefore holds the baseline back for both until its next acknowledged view is reconciled (the safe direction: an
+  unacknowledged write is never recorded as the cloud's word).
+- A snapshot is held back only by in-flight batches that write its own collection, not by any in-flight batch: a habits-only
+  hold-back during a task write would lose a remote habit change, since no later habits snapshot follows. A rejected batch rolls back
+  only the sides of `lastPushed` it wrote, each to the `prev` of the oldest unsettled batch writing that side, and rebases the `prev`
+  of the later unsettled batches on that side onto the same state (there is no session-wide pin). A side the batch did not write
+  keeps what its snapshots taught it: rewinding it would replay already-applied cloud changes as local edits over newer cloud values,
+  and could re-key and re-upload a task or tracker deleted elsewhere.
+- Status: a server snapshot on one collection sets `connecting` (never `synced`) until the other confirms; if the 10 s confirm timer had
+  already flipped the status to `offline`, a lone server snapshot flips it back to `connecting` until the second collection answers.
+- The saved baseline record is v2 (`tasks`, `ackedTasks` added). A v1 record (phase 2) reads as a valid baseline with an empty tasks
+  side; stray task fields on a v1 record are ignored. `writeBaseline` accepts the tasks side as optional (saved empty) so phase-2 callers
+  compile unchanged.
+- `sameTasks` bug fixed in the pure layer: it could report two lists equal when the first held a duplicate id standing in for a task it
+  lacked (only the second list's ids were checked for uniqueness).
+
+**Settings and copy (§14.5 last bullet, §13.6)**
+- Reset: "Every tracker, check-in and task on this device will be removed …" (all three variants name tasks). Import preview
+  (`describeBackup`): "1 tracker · 42 check-ins · 3 tasks · exported 16 Oct 2026" — tasks are named only when the backup holds some, so
+  a pre-phase-3 file reads as before; the replace sentence names the device's tasks when there are some ("The 2 trackers, 5 check-ins
+  and 3 tasks on this device will be replaced"), since an import replaces tasks too. The Sync card's lead, sign-out, delete-confirm and
+  delete-outcome sentences say "trackers and tasks".
+
+**Tests**
+- `e2e/tasks.spec.ts` (Playwright, WebKit iPhone 14, no network) covers the Tasks section, the Week day groups, the editor (Close on an
+  untouched sheet, submit-time validation, quick chips, native date/time inputs, note), check-off incl. late and early, the inline
+  delete confirm and focus return, persistence (v3) and text contrast in both themes. `e2e/sync.spec.ts` carries tasks between the
+  two phones too (planned with a time and a note, checked, renamed, un-checked, deleted while the other phone has it open in the
+  editor) and reads `users/{uid}/tasks` back over REST; it ran against the real project in phase 3.
+- `e2e/sync.spec.ts` cleanup: it sweeps both collections, retries every Node-side call (1/2/4/8 s backoff on a dropped request or a
+  429/5xx, 20 s per request), deletes the account even when the document sweep failed, and records the account's uid in
+  `cleanup.json`. The random password lives only in the worker, so before the account can exist the beforeAll writes the
+  credentials to a git-ignored, owner-only ledger (`e2e/.pending-cleanup/`, `e2e/helpers/ledger.ts`, throwaway addresses only); the
+  afterAll forgets them once a sign-in with them is refused, and each run's beforeAll first removes what earlier runs left there
+  (entries whose process has exited, or older than an hour), reported in `cleanup.json` under `earlierRuns`. A run still in progress
+  is never swept.
+- Realtime budgets in `e2e/sync.spec.ts`: 10 s per hop, except each phone's first write after it signs in or reloads, which gets 20 s
+  (`COLD_WRITE_MS`): Firestore opens its Write stream lazily, so that write also pays for the WebChannel handshake.
+- `formatTime` output is device-locale dependent; tests assert against the same Intl formula or 12h/24h-tolerant patterns, never an
+  exact string.

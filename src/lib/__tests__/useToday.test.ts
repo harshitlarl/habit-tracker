@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { msUntilNextMidnight } from '../useToday';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { msUntilNextMidnight, useToday } from '../useToday';
 import { addDays, todayKey } from '../dates';
+import { fakeTarget, hookValue, mountHook, resetHook } from './fakeReact';
 
-// TZ=America/New_York. The hook itself needs a DOM; its pure helper is tested here.
+// TZ=America/New_York. The hook runs on a stand-in for React's hooks and the DOM (fakeReact.ts).
+vi.mock('react', async () => (await import('./fakeReact')).fakeReact);
+
 const HOUR = 3_600_000;
 
 describe('msUntilNextMidnight', () => {
@@ -45,5 +48,79 @@ describe('msUntilNextMidnight', () => {
     const ms = msUntilNextMidnight();
     expect(ms).toBeGreaterThanOrEqual(0);
     expect(ms).toBeLessThanOrEqual(25 * HOUR);
+  });
+});
+
+describe('useToday', () => {
+  let doc = fakeTarget({ visibilityState: 'visible' });
+  let win = fakeTarget({});
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetHook();
+    doc = fakeTarget({ visibilityState: 'visible' });
+    win = fakeTarget({});
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('window', win);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('re-reads the date when it mounts: rendered just before midnight, mounted just after, it shows the new day', () => {
+    vi.setSystemTime(new Date(2026, 9, 17, 23, 59, 59, 995));
+    useToday(); // the render
+    expect(hookValue()).toBe('2026-10-17');
+    vi.setSystemTime(new Date(2026, 9, 18, 0, 0, 0, 20)); // React runs the passive effect a moment later
+    mountHook();
+    expect(hookValue()).toBe('2026-10-18');
+    vi.advanceTimersByTime(HOUR);
+    expect(hookValue()).toBe('2026-10-18');
+  });
+
+  it('mounted mid-day, keeps the date until just after midnight, then follows the next midnight too', () => {
+    vi.setSystemTime(new Date(2026, 9, 17, 10, 0, 0));
+    useToday();
+    mountHook();
+    expect(hookValue()).toBe('2026-10-17');
+    vi.advanceTimersByTime(14 * HOUR); // 00:00:00.000; the timer keeps a 1 s margin
+    expect(hookValue()).toBe('2026-10-17');
+    vi.advanceTimersByTime(1000);
+    expect(hookValue()).toBe('2026-10-18');
+    vi.advanceTimersByTime(24 * HOUR);
+    expect(hookValue()).toBe('2026-10-19');
+  });
+
+  it('re-reads the date on visibilitychange (when visible), focus and pageshow, since iOS suspends timers in the background', () => {
+    vi.setSystemTime(new Date(2026, 9, 17, 22, 0, 0));
+    useToday();
+    mountHook();
+    vi.setSystemTime(new Date(2026, 9, 18, 7, 0, 0)); // the clock moved on while no timer ran
+    doc.visibilityState = 'hidden';
+    doc.dispatch('visibilitychange');
+    expect(hookValue()).toBe('2026-10-17');
+    doc.visibilityState = 'visible';
+    doc.dispatch('visibilitychange');
+    expect(hookValue()).toBe('2026-10-18');
+    vi.setSystemTime(new Date(2026, 9, 19, 7, 0, 0));
+    win.dispatch('focus');
+    expect(hookValue()).toBe('2026-10-19');
+    vi.setSystemTime(new Date(2026, 9, 20, 7, 0, 0));
+    win.dispatch('pageshow');
+    expect(hookValue()).toBe('2026-10-20');
+  });
+
+  it('unmounting clears the timer and every listener', () => {
+    vi.setSystemTime(new Date(2026, 9, 17, 10, 0, 0));
+    useToday();
+    const unmount = mountHook();
+    expect(doc.listenerCount() + win.listenerCount()).toBe(3);
+    unmount();
+    expect(doc.listenerCount() + win.listenerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(48 * HOUR);
+    expect(hookValue()).toBe('2026-10-17');
   });
 });

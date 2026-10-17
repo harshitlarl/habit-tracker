@@ -12,12 +12,22 @@
   text-wrap: pretty;
 }
 
-/* ---------- Signed out: the sign-in form ---------- */
+/* ---------- Signed out: one button, then the sign-in form ---------- */
+/* "Sign in or create account": a quiet 44px button under the lead until the form is asked for. */
+.sync__open {
+  margin-top: var(--s-4);
+}
+
 .sync__form {
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
   margin-top: var(--s-4);
+}
+
+/* The flex display above would otherwise beat the UA's [hidden] rule. */
+.sync__form[hidden] {
+  display: none;
 }
 
 .sync__password {
@@ -86,6 +96,8 @@
 }
 
 /* ---------- Messages: confirmations in --ink-2, errors in ember ink ---------- */
+/* role="status" lines that stay in the DOM while empty, so VoiceOver announces the text when it
+   arrives; empty, a line has no height and takes no space. */
 .sync__message {
   font-size: 14px;
   line-height: 1.4;
@@ -93,8 +105,9 @@
   text-wrap: pretty;
 }
 
-.sync__message:empty {
-  display: none;
+/* Cancels the form's gap above an empty line. */
+.sync__form > .sync__message:empty {
+  margin-top: calc(-1 * var(--s-3));
 }
 
 .sync__message.is-error {
@@ -154,7 +167,7 @@
   background: var(--danger);
 }
 
-.sync__account > .sync__message {
+.sync__account > .sync__message:not(:empty) {
   margin-top: var(--s-3);
 }
 

@@ -25,6 +25,7 @@ import {
 import { addDays, isDateKey, isScheduled, todayKey } from './dates';
 import { newId } from './ids';
 import { isDone } from './selectors';
+import { clampText } from './text';
 import { clearAllBaselines } from './sync/baseline';
 import { sameData } from './sync/merge';
 import { sameTasks } from './sync/tasksMerge';
@@ -154,6 +155,9 @@ const isTheme = (v: unknown): v is Theme => v === 'system' || v === 'light' || v
 
 const fail = (error: string): { ok: false; error: string } => ({ ok: false, error });
 
+/** What the import flow says about JSON that some other app (or a person) wrote. */
+export const NOT_A_BACKUP = 'This file is not a Momentum backup.';
+
 /**
  * Strict shape validation of a backup file (version, arrays, ids, colours, days, date keys,
  * completion references, settings). Returns normalised data ready to replace the store.
@@ -161,7 +165,18 @@ const fail = (error: string): { ok: false; error: string } => ({ ok: false, erro
  */
 export function validateAppData(raw: unknown): ValidationResult {
   if (!isRecord(raw)) return fail('The file is not a Momentum backup (expected a JSON object).');
-  if (raw.version !== 1) return fail(`Unsupported backup version: ${String(raw.version)}.`);
+  // An object without a numeric version, or without trackers and check-ins at all, is somebody else's
+  // JSON: say so rather than "Unsupported backup version: undefined." A real backup carrying a number
+  // this build does not know (a newer Momentum) keeps naming that number.
+  if (
+    typeof raw.version !== 'number' ||
+    !Number.isFinite(raw.version) ||
+    raw.habits === undefined ||
+    raw.completions === undefined
+  ) {
+    return fail(NOT_A_BACKUP);
+  }
+  if (raw.version !== 1) return fail(`Unsupported backup version: ${raw.version}.`);
   if (!Array.isArray(raw.habits)) return fail('"habits" must be an array.');
   if (!isRecord(raw.completions)) return fail('"completions" must be an object.');
   if (!isRecord(raw.settings)) return fail('"settings" must be an object.');
@@ -311,17 +326,44 @@ export function uniqueIds(idList: readonly string[]): string[] {
 
 const memory = new Map<string, string>();
 
-/** The error thrown by the latest attempted localStorage write; null again once a write succeeds. */
-let lastWriteError: Error | null = null;
+/** Whether this device is keeping what the owner does, published for Settings ("not saving changes"). */
+export interface StorageHealth {
+  /** The error thrown by the latest attempted localStorage write (quota, storage disabled); null once a write lands. */
+  error: Error | null;
+  /**
+   * True in a browser (a window exists) that offers no usable localStorage at all — missing, or access
+   * refused: every change lives in memory only. Never set outside a browser (tests, node), where the
+   * in-memory copy is the expected storage.
+   */
+  unavailable: boolean;
+}
+
+/**
+ * Storage health, reactive (a tiny zustand store, not persisted). Updated by every write persist makes
+ * through safeStorage and by importData's pre-write (tryWriteRecord); a write that lands clears it.
+ */
+export const useStorageHealth = create<StorageHealth>()(() => ({ error: null, unavailable: false }));
+
+/** Publishes the outcome of a write attempt; subscribers hear only actual changes. */
+function recordWrite(error: Error | null, unavailable: boolean): void {
+  const current = useStorageHealth.getState();
+  if (current.error === error && current.unavailable === unavailable) return;
+  useStorageHealth.setState({ error, unavailable });
+}
+
+const toError = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)));
+
+/** A browser is running this code, so a missing localStorage means changes will not survive a reload. */
+const inBrowser = (): boolean => typeof window !== 'undefined';
 
 /**
  * Why the most recent localStorage write failed (quota exceeded, storage disabled), or null when it
  * succeeded or there was no browser storage to write to. While it is set, changes live only in
  * memory and will not survive a reload: `importData` refuses to report success in that state, and
- * a settings screen can use it to warn that changes are not being saved.
+ * Settings warns that changes are not being saved (see useStorageHealth).
  */
 export function lastStorageError(): Error | null {
-  return lastWriteError;
+  return useStorageHealth.getState().error;
 }
 
 /** Names browsers give a full-storage failure (WebKit/Blink, then Gecko). */
@@ -344,29 +386,33 @@ function browserStorage(): Storage | undefined {
 /**
  * Write the record persist would write for `state` (same key, same shape, same size) straight to the
  * browser, before the store changes. Returns the browser's error when it refuses, null when the write
- * landed or there is no browser storage to refuse it. `lastWriteError` follows the outcome, as it
+ * landed or there is no browser storage to refuse it. The storage health follows the outcome, as it
  * does for persist's own writes.
  */
 function tryWriteRecord(state: PersistedState): Error | null {
   const storage = browserStorage();
   if (!storage) {
-    lastWriteError = null;
+    recordWrite(null, inBrowser());
     return null;
   }
   try {
     storage.setItem(STORAGE_KEY, JSON.stringify({ state, version: PERSIST_VERSION }));
-    lastWriteError = null;
+    recordWrite(null, false);
     return null;
   } catch (error) {
-    lastWriteError = error instanceof Error ? error : new Error(String(error));
-    return lastWriteError;
+    const refused = toError(error);
+    recordWrite(refused, false);
+    return refused;
   }
 }
 
 const safeStorage: StateStorage = {
   getItem: (name) => {
+    const storage = browserStorage();
+    // Known at launch (hydration reads first): a browser with no usable localStorage keeps nothing.
+    if (!storage && inBrowser()) recordWrite(null, true);
     try {
-      const value = browserStorage()?.getItem(name);
+      const value = storage?.getItem(name);
       if (value !== undefined && value !== null) return value;
     } catch {
       /* fall through to memory */
@@ -377,18 +423,18 @@ const safeStorage: StateStorage = {
     memory.set(name, value);
     const storage = browserStorage();
     if (!storage) {
-      lastWriteError = null;
+      recordWrite(null, inBrowser());
       return;
     }
     try {
       storage.setItem(name, value);
-      lastWriteError = null;
+      recordWrite(null, false);
     } catch (error) {
       // Quota exceeded / storage disabled: the in-memory copy keeps the session working. persist
       // writes synchronously inside every action's set(), after the state change has applied, so
-      // throwing here would surface as an error in each tap; the failure is recorded instead and
-      // checked where a false "saved" would mislead (importData).
-      lastWriteError = error instanceof Error ? error : new Error(String(error));
+      // throwing here would surface as an error in each tap; the failure is recorded instead, checked
+      // where a false "saved" would mislead (importData) and shown in Settings (useStorageHealth).
+      recordWrite(toError(error), false);
     }
   },
   removeItem: (name) => {
@@ -412,17 +458,17 @@ const safeStorage: StateStorage = {
  */
 function repairHabit(raw: unknown): Habit | null {
   if (!isRecord(raw) || !isIdLike(raw.id)) return null;
-  const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, HABIT_NAME_MAX) : '';
+  const name = typeof raw.name === 'string' ? clampText(raw.name, HABIT_NAME_MAX) : '';
   const habit: Habit = {
     id: isValidId(raw.id) ? raw.id : newId(),
     name: name || 'Untitled',
-    emoji: typeof raw.emoji === 'string' ? raw.emoji.trim().slice(0, HABIT_EMOJI_MAX) : '',
+    emoji: typeof raw.emoji === 'string' ? clampText(raw.emoji, HABIT_EMOJI_MAX) : '',
     color: isHabitColor(raw.color) ? raw.color : HABIT_COLORS[0],
     days: scheduleDays(Array.isArray(raw.days) ? raw.days.filter(isWeekday) : []),
     createdAt: isDateKey(raw.createdAt) ? raw.createdAt : todayKey(),
     order: typeof raw.order === 'number' && Number.isFinite(raw.order) ? raw.order : 0,
   };
-  const note = typeof raw.note === 'string' ? raw.note.trim().slice(0, HABIT_NOTE_MAX) : '';
+  const note = typeof raw.note === 'string' ? clampText(raw.note, HABIT_NOTE_MAX) : '';
   if (note) habit.note = note;
   if (isDateKey(raw.archivedAt)) habit.archivedAt = raw.archivedAt;
   return habit;
@@ -435,7 +481,7 @@ function repairHabit(raw: unknown): Habit | null {
  */
 function repairTask(raw: unknown): Task | null {
   if (!isRecord(raw) || !isIdLike(raw.id)) return null;
-  const title = typeof raw.title === 'string' ? raw.title.trim().slice(0, TASK_TITLE_MAX) : '';
+  const title = typeof raw.title === 'string' ? clampText(raw.title, TASK_TITLE_MAX) : '';
   const createdAt = isDateKey(raw.createdAt) ? raw.createdAt : todayKey();
   const done = raw.done === true;
   const task: Task = {
@@ -445,7 +491,7 @@ function repairTask(raw: unknown): Task | null {
     done,
     createdAt,
   };
-  const note = typeof raw.note === 'string' ? raw.note.trim().slice(0, TASK_NOTE_MAX) : '';
+  const note = typeof raw.note === 'string' ? clampText(raw.note, TASK_NOTE_MAX) : '';
   if (note) task.note = note;
   if (isTimeString(raw.time)) task.time = raw.time;
   if (done && isDateKey(raw.doneAt)) task.doneAt = raw.doneAt;
@@ -499,9 +545,14 @@ function repairPersisted(persisted: unknown, current: PersistedState): Persisted
 
   const tasks: Task[] = [];
   const taskIds = new Set<string>();
+  /** Stored ids repairTask re-keyed, so a second record under the same unusable id is dropped like a duplicate. */
+  const rekeyedTasks = new Set<string>();
   for (const item of Array.isArray(p.tasks) ? p.tasks : []) {
     const task = repairTask(item);
-    if (!task || taskIds.has(task.id)) continue;
+    if (!task) continue;
+    const storedId = isRecord(item) && typeof item.id === 'string' ? item.id : task.id;
+    if (taskIds.has(task.id) || rekeyedTasks.has(storedId)) continue;
+    if (storedId !== task.id) rekeyedTasks.add(storedId);
     taskIds.add(task.id);
     tasks.push(task);
   }
@@ -624,7 +675,7 @@ const useStore = create<StoreState>()(
         }),
 
       addTask: (input) => {
-        const title = input.title.trim().slice(0, TASK_TITLE_MAX);
+        const title = clampText(input.title, TASK_TITLE_MAX);
         const createdAt = isDateKey(input.createdAt) ? input.createdAt : todayKey();
         const task: Task = {
           id: newId(),
@@ -633,14 +684,15 @@ const useStore = create<StoreState>()(
           done: false,
           createdAt,
         };
-        const note = input.note?.trim().slice(0, TASK_NOTE_MAX);
+        const note = typeof input.note === 'string' ? clampText(input.note, TASK_NOTE_MAX) : '';
         if (note) task.note = note;
         if (isTimeString(input.time)) task.time = input.time;
         set((s) => ({ tasks: [...s.tasks, task] }));
         return task;
       },
 
-      // Field by field, like updateHabit. `note` / `time` are clearable; a blank title is ignored.
+      // Field by field, like updateHabit. `note` / `time` are clearable with undefined or ''; a blank
+      // title, an invalid date and an invalid non-empty time are ignored (SPEC §14.3).
       updateTask: (id, patch) =>
         set((s) => {
           if (!s.tasks.some((t) => t.id === id)) return s;
@@ -649,18 +701,18 @@ const useStore = create<StoreState>()(
               if (t.id !== id) return t;
               const next: Task = { ...t };
               if (typeof patch.title === 'string') {
-                const title = patch.title.trim().slice(0, TASK_TITLE_MAX);
+                const title = clampText(patch.title, TASK_TITLE_MAX);
                 if (title) next.title = title;
               }
               if ('note' in patch) {
-                const note = patch.note?.trim().slice(0, TASK_NOTE_MAX);
+                const note = typeof patch.note === 'string' ? clampText(patch.note, TASK_NOTE_MAX) : '';
                 if (note) next.note = note;
                 else delete next.note;
               }
               if (isDateKey(patch.date)) next.date = patch.date;
               if ('time' in patch) {
                 if (isTimeString(patch.time)) next.time = patch.time;
-                else delete next.time;
+                else if (patch.time === undefined || patch.time === '') delete next.time;
               }
               return next;
             }),

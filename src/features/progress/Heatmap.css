@@ -49,7 +49,12 @@
   background: var(--tone);
 }
 
+/* A completion on an unscheduled day: a tone ring, no fill. Shape carries the state at full colour
+   (the faded fill measured 1.7:1 on paper; every tone ring is ≥3.2:1 in both themes). Drawn round, so
+   it never reads as the square ring of a missed day or of a still-open today — terracotta and the
+   ember outline are one colour. */
 .heat__cell.is-bonus {
-  background: var(--tone);
-  opacity: 0.45;
+  background: transparent;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--tone);
 }

@@ -9,8 +9,9 @@ export function msUntilNextMidnight(now: Date = new Date()): number {
 }
 
 /**
- * The current local DateKey. Re-evaluated at local midnight (timer to the next midnight),
- * and whenever the page becomes visible or focused again (iOS suspends timers in the background).
+ * The current local DateKey. Re-evaluated when the view mounts, at local midnight (timer to the next
+ * midnight), and whenever the page becomes visible or focused again (iOS suspends timers in the
+ * background).
  */
 export function useToday(): DateKey {
   const [today, setToday] = useState<DateKey>(() => todayKey());
@@ -34,7 +35,10 @@ export function useToday(): DateKey {
       if (document.visibilityState === 'visible') refresh();
     }
 
-    arm();
+    // refresh(), not just arm(): the initial state was read at render, and a midnight can fall between
+    // the render and this effect (a tab switched to at 23:59:59.99x); the timer alone would keep
+    // yesterday until the next midnight. Unchanged (the usual case), the update is a no-op.
+    refresh();
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', refresh);
     window.addEventListener('pageshow', refresh);

@@ -73,6 +73,24 @@ export function isCuratedEmoji(char: string): boolean {
   return CURATED.has(char);
 }
 
+/** How many options the editor shows before "More emoji": two short rows on a phone, so Save stays near. */
+export const COLLAPSED_EMOJI_COUNT = 16;
+
+/**
+ * The options the editor's grid shows. Expanded: all of them. Collapsed: the first `limit`, plus the
+ * selected one when it sits further down the list, so the current choice is always on screen and checked.
+ */
+export function visibleEmojiOptions(
+  selected: string,
+  expanded: boolean,
+  limit: number = COLLAPSED_EMOJI_COUNT,
+): readonly EmojiOption[] {
+  if (expanded || EMOJI_OPTIONS.length <= limit) return EMOJI_OPTIONS;
+  const head = EMOJI_OPTIONS.slice(0, limit);
+  const picked = EMOJI_OPTIONS.slice(limit).find((o) => o.char === selected);
+  return picked ? [...head, picked] : head;
+}
+
 /**
  * The first user-perceived character of `value` (one emoji, even a flag or a ZWJ sequence),
  * or '' when there is nothing but whitespace.

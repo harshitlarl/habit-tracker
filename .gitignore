@@ -10,6 +10,9 @@ coverage
 test-results
 playwright-report
 e2e/screenshots
+# The sync spec's pending-cleanup ledger (e2e/helpers/ledger.ts): throwaway-account credentials, owner-only,
+# kept until the account is verified gone. Never commit it.
+e2e/.pending-cleanup/
 
 # Local-only env overrides. The committed .env holds only the PUBLIC Firebase web config
 # (SPEC §13.2) and must stay tracked; private values belong in .env.local / .env.*.local,

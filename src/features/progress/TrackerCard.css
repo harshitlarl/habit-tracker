@@ -3,11 +3,39 @@
   padding: var(--s-5) 0 var(--s-6);
 }
 
+/* The header opens the editor. The button lies over the whole row (emoji + name + note), drawn above
+   it with only a chevron of its own; the right padding keeps a long name clear of that chevron. */
 .tracker__head {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  min-height: 44px;
+  padding-right: 26px;
   margin-bottom: var(--s-5);
+}
+
+.tracker__edit {
+  position: absolute;
+  inset: -4px -8px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 8px; /* cancels the -8px inset: the chevron ends on the column's edge, like the heatmap */
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  transition: background-color 160ms ease;
+}
+
+/* A translucent wash, so the emoji and name under the button stay visible while it is pressed. */
+.tracker__edit:active {
+  background: var(--line);
+}
+
+@media (hover: hover) {
+  .tracker__edit:hover {
+    background: var(--line);
+  }
 }
 
 .tracker__emoji {

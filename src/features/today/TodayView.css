@@ -1,21 +1,58 @@
-/* Today — the journal's front page. Layout, pull-quote, sections, collapsible and the "+" FAB.
+/* Today — the journal's front page. Layout, header tools, pull-quote, sections and the collapsible.
    Rows live in HabitRow.css. */
-
-.view.today {
-  /* Room for the floating "+" (56px, 16px above the tab bar) so it never covers the last row. */
-  padding-bottom: calc(var(--s-7) + 72px);
-}
 
 .today__title {
   min-width: 0;
+}
+
+/* At 320px wide (iPhone Display Zoom) "Wednesday" at 40px would run under the ring and "Add tracker";
+   the weekday steps down there only. */
+@media (max-width: 359px) {
+  .today__title .display--xl {
+    font-size: 34px;
+  }
 }
 
 .today__date {
   margin-top: var(--s-2);
 }
 
-.today__ring {
+/* ---------- Header tools: the ring and "Add tracker", top right ---------- */
+.today__tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s-3);
   margin-top: 4px;
+}
+
+/* 44px round icon button, the same family as the ‹ › buttons on Week. It sits up here rather than
+   floating bottom-right (SPEC §3.1): a fixed "+" shared its x-band with every row's Check and caught
+   taps meant for a check mid-scroll. */
+.today__add {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  transition:
+    transform 120ms ease,
+    background-color 160ms ease;
+}
+
+.today__add:active {
+  transform: scale(0.94);
+  background: var(--surface-2);
+}
+
+@media (hover: hover) {
+  .today__add:hover {
+    background: var(--surface-2);
+  }
 }
 
 /* ---------- Motivation pull-quote ---------- */
@@ -86,7 +123,7 @@
   padding-left: 2px;
 }
 
-/* Sits right after the count (not at the far right) so the floating "+" never hides it. */
+/* Sits right after the count rather than at the far right, so label, count and chevron read as one phrase. */
 .today__chevron {
   color: var(--ink-2);
   transition: transform 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
@@ -94,38 +131,6 @@
 
 .today__toggle[aria-expanded='true'] .today__chevron {
   transform: rotate(90deg);
-}
-
-/* ---------- Floating "+" ---------- */
-.fab {
-  position: fixed;
-  z-index: 15; /* under the tab bar (20) and sheets (50) */
-  /* Right gutter of the content column, or the safe area, whichever is larger. */
-  right: max(var(--gutter), env(safe-area-inset-right, 0px), calc((100vw - var(--content-max)) / 2 + var(--gutter)));
-  bottom: calc(var(--bottom-stack-h) + var(--s-4));
-  display: grid;
-  place-items: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: var(--accent-solid);
-  color: var(--on-accent);
-  box-shadow:
-    var(--shadow),
-    0 1px 2px rgba(0, 0, 0, 0.12);
-  transition:
-    transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 160ms ease;
-}
-
-.fab:active {
-  transform: scale(0.92);
-}
-
-@media (hover: hover) {
-  .fab:hover {
-    filter: brightness(1.06);
-  }
 }
 
 /* ---------- Empty state ---------- */

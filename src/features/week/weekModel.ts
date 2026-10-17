@@ -8,20 +8,25 @@ export interface CellModel {
   state: CellState;
   future: boolean;
   disabled: boolean;
-  /** e.g. "Gym, Tuesday 14 October, done" */
+  /**
+   * e.g. "Gym, Tuesday 14 October", "Gym, Thursday 15 October, bonus". Done / not done is not in the
+   * name: a tappable cell is a toggle button and aria-pressed carries it, so the name of a scheduled day
+   * never changes under a tap. Only a disabled future cell, which has no aria-pressed, says "done".
+   */
   label: string;
 }
 
+/** Suffix after the name and date; '' where aria-pressed (set on every tappable cell) says everything. */
 const STATUS: Readonly<Record<CellState, string>> = {
-  done: 'done',
-  bonus: 'done as a bonus',
-  due: 'not done',
+  done: '',
+  bonus: 'bonus',
+  due: '',
   off: 'not scheduled',
   outside: 'not tracked',
 };
 
 /**
- * done + scheduled → filled check; done + unscheduled → bonus (faint fill); scheduled → outline;
+ * done + scheduled → filled check; done + unscheduled → bonus (tone ring + check); scheduled → outline;
  * unscheduled → dash; before createdAt / from archivedAt → empty. Future days are disabled.
  */
 export function cellModel(habit: Habit, done: boolean, dateKey: DateKey, today: DateKey): CellModel {
@@ -35,13 +40,18 @@ export function cellModel(habit: Habit, done: boolean, dateKey: DateKey, today: 
   else if (outside) state = 'outside';
   else state = scheduled ? 'due' : 'off';
 
-  const status = state === 'due' && future ? 'upcoming' : STATUS[state];
+  // Future cells are disabled and carry no aria-pressed: a scheduled one reads "upcoming", and a
+  // completion already logged there (an import, another device's clock) keeps its "done".
+  let status = STATUS[state];
+  if (future && state === 'due') status = 'upcoming';
+  else if (future && state === 'done') status = 'done';
+  const name = `${habit.name}, ${formatWeekday(dateKey)} ${formatLongDate(dateKey)}`;
   return {
     state,
     future,
     // A stray completion outside the tracker's active range stays tappable so it can be cleared.
     disabled: future || (outside && !done),
-    label: `${habit.name}, ${formatWeekday(dateKey)} ${formatLongDate(dateKey)}, ${status}`,
+    label: status === '' ? name : `${name}, ${status}`,
   };
 }
 

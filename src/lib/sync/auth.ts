@@ -1,6 +1,7 @@
 import type { User } from 'firebase/auth';
 import type { Firestore } from 'firebase/firestore';
 import { loadFirebase, type FirebaseHandles, type FirebaseSdk } from './firebase';
+import { useSyncStore } from './syncStore';
 import type { SyncUser } from './types';
 
 /**
@@ -11,7 +12,7 @@ import type { SyncUser } from './types';
 const OFFLINE_MESSAGE = 'You seem to be offline. Check your connection and try again.';
 const GENERIC_MESSAGE = 'Something went wrong. Try again in a moment.';
 /** How long sign-out waits for queued writes to reach the server before going ahead anyway. */
-const FLUSH_TIMEOUT_MS = 4_000;
+export const FLUSH_TIMEOUT_MS = 4_000;
 
 /** Calm, user-facing sentences for the codes the sign-in form can run into. */
 const AUTH_MESSAGES: Readonly<Record<string, string>> = {
@@ -45,15 +46,43 @@ export async function resetPassword(email: string): Promise<void> {
   await withAuth(({ auth, sdk }) => sdk.auth.sendPasswordResetEmail(auth, email.trim()));
 }
 
+/** What signOutUser found out about the account it signed out; read once by bootstrap.ts. */
+let lastSignOut: { uid: string; clean: boolean } | null = null;
+
 /**
  * Signs out of Firebase. Local data is untouched. Writes still queued for the server get a bounded
  * moment to land first, so a check-in made seconds before signing out is not left behind.
+ *
+ * Signing out clears Firestore's local cache, queue included (bootstrap.ts). When the engine reported
+ * writes waiting and they could not be confirmed — offline, so the flush was skipped, or it timed out or
+ * failed — the sign-out is recorded as unclean (signOutWasClean) and bootstrap.ts keeps the account's
+ * sync baseline: the next sign-in by the same account then reconciles three-way and replays those edits
+ * (an un-check or a rename included) instead of uniting them away with the cloud's copy.
  */
 export async function signOutUser(): Promise<void> {
   await withAuth(async ({ auth, db, sdk }) => {
-    await flushPendingWrites(db, sdk.firestore);
-    await sdk.auth.signOut(auth);
+    // Read before signing out: the auth callback resets the sync store.
+    const { user, pending } = useSyncStore.getState();
+    const flushed = await flushPendingWrites(db, sdk.firestore);
+    lastSignOut = user ? { uid: user.uid, clean: !pending || flushed } : null;
+    try {
+      await sdk.auth.signOut(auth);
+    } catch (error) {
+      lastSignOut = null;
+      throw error;
+    }
   });
+}
+
+/**
+ * Whether `uid`'s sign-out through signOutUser was clean: true when nothing was waiting or every write
+ * reached the server first, false when writes made offline could not be confirmed. Null when `uid` was
+ * not signed out by signOutUser (a session ended elsewhere). Answers once per sign-out.
+ */
+export function signOutWasClean(uid: string): boolean | null {
+  const verdict = lastSignOut;
+  lastSignOut = null;
+  return verdict?.uid === uid ? verdict.clean : null;
 }
 
 /** Subscribe to auth changes (loads Firebase first). Resolves to the unsubscribe function. */
@@ -91,21 +120,23 @@ async function withAuth<T>(run: (handles: FirebaseHandles) => Promise<T>): Promi
 /**
  * Best effort: writes that have not reached the server when the user signs out would otherwise be
  * left behind (sign-out clears Firestore's local cache, queue included), so give them a bounded
- * moment. Skipped offline, where waiting would only delay the sign-out: trackers and check-ins made
- * offline are re-sent by the first-contact merge of the next sign-in. Never throws.
+ * moment. Skipped offline, where waiting would only delay the sign-out: the saved baseline is kept
+ * then (see signOutUser), and the next sign-in replays what was made offline. Resolves true when the
+ * server confirmed every queued write, false when skipped, timed out or failed. Never throws.
  */
-async function flushPendingWrites(db: Firestore, fs: FirebaseSdk['firestore']): Promise<void> {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+async function flushPendingWrites(db: Firestore, fs: FirebaseSdk['firestore']): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      fs.waitForPendingWrites(db),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, FLUSH_TIMEOUT_MS);
+    return await Promise.race([
+      fs.waitForPendingWrites(db).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), FLUSH_TIMEOUT_MS);
       }),
     ]);
   } catch {
-    // Rejected on a user change or shutdown: nothing left to wait for.
+    // Rejected on a user change or shutdown: the queue's fate is unknown.
+    return false;
   } finally {
     clearTimeout(timer);
   }

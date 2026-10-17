@@ -1,6 +1,7 @@
-import { useMemo, useState, type MouseEvent } from 'react';
+import { useMemo, useRef, useState, type MouseEvent } from 'react';
 import useStore from '../../lib/store';
 import { activeHabits, toneClass } from '../../lib/selectors';
+import { prefersReducedMotion } from '../../lib/useReducedMotion';
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
 import { Icon } from '../../components/Icon';
@@ -23,10 +24,19 @@ export function ManageView() {
 
   const [editor, setEditor] = useState<EditorState>({ open: false });
   const [announcement, setAnnouncement] = useState('');
+  const settingsTitleRef = useRef<HTMLHeadingElement>(null);
 
   const openNew = (): void => setEditor({ open: true });
   const openEdit = (habitId: string): void => setEditor({ open: true, habitId });
   const closeEditor = (): void => setEditor((prev) => ({ ...prev, open: false }));
+
+  /** The gear: Settings sits below the tracker list, so bring its heading into view and focus it. */
+  function goToSettings(): void {
+    const title = settingsTitleRef.current;
+    if (!title) return;
+    title.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    title.focus({ preventScroll: true });
+  }
 
   function move(index: number, direction: -1 | 1, e: MouseEvent<HTMLButtonElement>): void {
     const target = index + direction;
@@ -64,6 +74,9 @@ export function ManageView() {
           </h1>
           {subtitle ? <p className="small-caps manage__sub">{subtitle}</p> : null}
         </div>
+        <button type="button" className="manage__settings" aria-label="Settings" onClick={goToSettings}>
+          <Icon name="gear" size={22} />
+        </button>
       </header>
 
       {active.length === 0 ? (
@@ -93,6 +106,7 @@ export function ManageView() {
                     </span>
                   </span>
                   <span className="sr-only">, edit</span>
+                  <Icon name="chevronRight" size={18} className="manage-row__chevron" />
                 </button>
                 <div className="manage-row__reorder">
                   <button
@@ -128,7 +142,7 @@ export function ManageView() {
         </>
       )}
 
-      <SettingsSection />
+      <SettingsSection titleRef={settingsTitleRef} />
 
       <HabitEditor open={editor.open} habitId={editor.habitId} onClose={closeEditor} />
     </section>

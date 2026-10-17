@@ -2,8 +2,10 @@
   margin-top: var(--s-7);
 }
 
+/* The Trackers header's gear scrolls here: stop clear of the status bar in standalone mode. */
 .settings__title {
   margin-bottom: var(--s-4);
+  scroll-margin-top: calc(var(--safe-top) + var(--s-5));
 }
 
 .settings__group + .settings__group {
@@ -25,6 +27,30 @@
   margin: calc(-1 * var(--s-1)) 0 var(--s-4);
 }
 
+/* One-line notes under the "Your data" lead: a quiet pointer for a fresh Home Screen copy, and the
+   warning when the device is not saving (a status region kept in the DOM; empty, it takes no space).
+   The negative top margin folds into the lead's bottom margin, so a note sits 8px under it. */
+.settings__note,
+.settings__warning {
+  font-size: 14px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.settings__note {
+  margin: calc(-1 * var(--s-2)) 0 var(--s-4);
+  color: var(--ink-2);
+}
+
+.settings__warning {
+  font-weight: 500;
+  color: var(--ember-ink);
+}
+
+.settings__warning:not(:empty) {
+  margin: calc(-1 * var(--s-2)) 0 var(--s-4);
+}
+
 .settings__buttons {
   display: flex;
   flex-wrap: wrap;
@@ -36,27 +62,26 @@
   min-width: 0;
 }
 
-.settings__status {
-  margin-top: var(--s-3);
+/* Outcome lines (export / import in "Your data", reset in its own card): role="status" regions that stay
+   in the DOM while empty, so VoiceOver announces the text when it arrives; empty, they take no space. */
+.settings__status,
+.settings__reset-status {
   font-size: 14px;
   line-height: 1.4;
   color: var(--ink-2);
 }
 
-.settings__status:empty {
-  display: none;
+.settings__status:not(:empty),
+.settings__reset-status:not(:empty) {
+  margin-top: var(--s-3);
 }
 
-.settings__status.is-error {
+.settings__status.is-error,
+.settings__reset-status.is-error {
   color: var(--danger);
 }
 
-.settings__danger {
-  margin-top: var(--s-4);
-  padding-top: var(--s-4);
-  border-top: 1px solid var(--line);
-}
-
+/* "Reset this device" has a card of its own, last, below Sync and Install. */
 .settings__danger > .confirm {
   margin-top: 0;
 }
