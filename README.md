@@ -10,7 +10,7 @@ something kind along the way. Everything lives on your phone: no account is need
 tracked. When you want your trackers and tasks backed up and shared between devices, sign in from
 Settings and they sync through a private space in the cloud; until then, nothing leaves the device.
 
-Live at **https://harshitlarl.github.io/habit-tracker/**
+Live at **https://momentum-harshitlarl.web.app**
 
 ## What it does
 
@@ -49,7 +49,7 @@ Live at **https://harshitlarl.github.io/habit-tracker/**
 
 ## Install it on your iPhone
 
-1. Open **https://harshitlarl.github.io/habit-tracker/** in **Safari** (it has to be Safari for
+1. Open **https://momentum-harshitlarl.web.app** in **Safari** (it has to be Safari for
    the Home Screen install).
 2. Tap the **Share** button (the square with the arrow), then **Add to Home Screen**, then **Add**.
 3. Open Momentum from the Home Screen. It runs full screen with its own icon and works offline.
@@ -274,9 +274,9 @@ It needs the network and sign-ups enabled in the Firebase console. Its Node-side
 that key from Node and, when Google cannot be reached or the key is restricted by HTTP referrer, skips
 the real-backend test and prints why; the whole file is skipped when `.env` holds no Firebase config,
 and `SYNC_E2E=0 npm run e2e` leaves it out on purpose. On a machine where WebKit cannot launch,
-`PW_FALLBACK_CHROMIUM=1 npm run e2e` runs the same phone geometry in Chromium. To run the suite in the
-GitHub Pages layout, build and test with the same base:
-`BASE_PATH=/habit-tracker/ npm run build && BASE_PATH=/habit-tracker/ npx playwright test`.
+`PW_FALLBACK_CHROMIUM=1 npm run e2e` runs the same phone geometry in Chromium. To run the suite against
+a build served from a sub-path (see "Serving from a sub-path" below), build and test with the same base:
+`BASE_PATH=/momentum/ npm run build && BASE_PATH=/momentum/ npx playwright test`.
 
 Stack: Vite 8, React 19, TypeScript (strict), zustand (persist → localStorage), date-fns, plain CSS
 with design tokens, vite-plugin-pwa (Workbox precache, auto-update), self-hosted Fraunces and Hanken
@@ -285,59 +285,37 @@ Firebase web SDK (Auth + Firestore) loaded lazily. No UI kit, no icon library, n
 
 ## Deploying
 
-Momentum is a static site: `npm run build` writes everything to `dist/`, and any static host can serve
-it. The committed `.env` supplies the public Firebase config at build time, so every host below builds
-with sync enabled and needs no environment variables of its own. Each deployment is a complete install
-— the PWA works offline from any of these URLs — and all of them talk to the same Firebase project, so a
-phone installed from one URL and a laptop on another see the same data once signed in. Pick one URL per
-device and stay with it: Home Screen apps and browser tabs from different origins are separate local
-copies, and sync is what joins them.
+Momentum is a static site: `npm run build` writes everything to `dist/`. Its one home is
+**https://momentum-harshitlarl.web.app** (Firebase Hosting). Until 2026-10-18 GitHub Pages served a
+second copy at `harshitlarl.github.io/habit-tracker/`; it was switched off so there is a single URL,
+because Home Screen apps and browser tabs from different origins keep separate local copies of the data
+and only sync joins them. The committed `.env` supplies the public Firebase config at build time, so
+every build has sync enabled and needs no environment variables of its own.
 
-| Host | URL | Deploys with | Needs |
-| --- | --- | --- | --- |
-| GitHub Pages | https://harshitlarl.github.io/habit-tracker/ | a push to `main` (`.github/workflows/deploy.yml`) | Pages source set to GitHub Actions |
-| Firebase Hosting | https://momentum-harshitlarl.web.app | `npm run deploy:firebase` | the Firebase CLI, signed in |
-| Vercel | `<project>.vercel.app` | a dashboard import or `npx vercel --prod` | nothing: `vercel.json` is in the repo |
-| Netlify | `<site>.netlify.app` | a dashboard import or `npx netlify-cli deploy --build --prod` | nothing: `netlify.toml` is in the repo |
+### Firebase Hosting, deployed by GitHub Actions
 
-All four are free for a personal project (GitHub Pages for public repositories, Firebase's Spark plan,
-Vercel's Hobby plan, Netlify's Free plan). `firebase.json`, `vercel.json` and `netlify.toml` send the
-same cache headers: `sw.js`, `index.html` (also as `/`) and `manifest.webmanifest` are `no-cache`, so a
-new deploy is noticed on the next launch; the hashed files under `assets/` are immutable for a year;
-icons and fonts are kept for a day. Every response also carries `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY` and a `Permissions-Policy`
-that turns off camera, microphone and geolocation (no Content-Security-Policy yet). Any path that is not
-a real file serves `index.html`. GitHub Pages sends its own ten-minute max-age for everything and cannot
-add headers, and it is the only host that serves the app from a sub-path; the service worker's
-revision-stamped precache keeps updates correct there too.
+Push to `main` and GitHub Actions does the rest: `.github/workflows/deploy.yml` checks out the repo,
+installs with `npm ci`, runs the typecheck and the unit tests (a red result stops the deploy), builds,
+and runs `firebase deploy --only hosting`. Pull requests, Dependabot's included, get the same checks
+without a deploy. The workflow can also be started by hand from the Actions tab. An in-progress
+deployment is never cancelled by a newer push; queued runs collapse to the latest one. Every action in
+it is pinned to a full commit SHA (the release is named in a comment), since a moved tag could otherwise
+publish anything to every installed copy; `.github/dependabot.yml` proposes updates weekly, for the
+actions and for npm, with minor and patch bumps grouped. After a bump of `@fontsource-variable/*`, run
+`npm run fonts` to refresh the copies in `public/fonts/`.
 
-### GitHub Pages
+The workflow holds no key. It signs in with Workload Identity Federation: the run's GitHub OIDC token is
+exchanged for a short-lived token of the service account
+`github-deploy@momentum-harshitlarl.iam.gserviceaccount.com`, whose only roles are *Firebase Hosting
+Admin* and *Service Usage Consumer*: it can publish the site and cannot read Firestore data or Auth
+users. Google accepts the exchange only for this repository's `main` branch: the provider
+`projects/21218059272/locations/global/workloadIdentityPools/github/providers/habit-tracker` checks the
+repository id, the owner id and the ref. A fork or a re-created repository therefore cannot deploy, and
+needs its own provider and service account. Firestore rules are not part of the workflow; they stay a
+deliberate `npm run deploy:rules`. To stop CI deploys, delete the provider (or the service account) in
+*Google Cloud → IAM & Admin → Workload Identity Federation*.
 
-Push to `main` and GitHub Actions does the rest: `deploy.yml` checks out the repo, installs with
-`npm ci`, runs the unit tests (a red suite stops the deploy), builds with `BASE_PATH=/habit-tracker/`
-so every URL in `index.html`, the manifest and the service worker is prefixed for Pages, and publishes
-`dist/` with `actions/deploy-pages`. The workflow can also be started by hand from the Actions tab. An
-in-progress deployment is never cancelled by a newer push; queued runs collapse to the latest one.
-Every action in it is pinned to a full commit SHA (the release is named in a comment), since a moved
-tag could otherwise publish anything to every installed copy; `.github/dependabot.yml` proposes
-updates weekly, for the actions and for npm, with minor and patch bumps grouped. After a bump of
-`@fontsource-variable/*`, run `npm run fonts` to refresh the copies in `public/fonts/`.
-
-One-time repository settings:
-
-- **Settings → Pages → Build and deployment → Source: GitHub Actions.**
-- The default branch must be `main` (or change the `branches` filter in the workflow). If the local
-  repository still calls its branch `master`, rename it once with `git branch -M main` before the first
-  push, or the workflow never triggers.
-- The workflow derives `BASE_PATH` from the repository name, so a renamed or forked repo follows
-  automatically; a user-site repository (`<user>.github.io`) would need `BASE_PATH: /` instead.
-
-To reproduce the Pages build locally: `BASE_PATH=/habit-tracker/ npm run build`, then
-`BASE_PATH=/habit-tracker/ npm run preview` (the preview takes its base from the same variable; without
-it, the scripts under `/habit-tracker/` come back as the page itself) and open
-`http://localhost:4173/habit-tracker/`.
-
-### Firebase Hosting
+By hand, from a machine with the Firebase CLI signed in:
 
 ```sh
 npm install -g firebase-tools   # the CLI is a global tool, deliberately not a project dependency
@@ -346,21 +324,34 @@ npm run deploy:firebase         # tsc + vite build, then: firebase deploy --only
 npm run deploy:rules            # firebase deploy --only firestore:rules — rules only, no build
 ```
 
-`.firebaserc` selects the project, so there is no `firebase use` step; `firebase.json` serves `dist/`
-with the SPA rewrite and the cache headers above. The site's URL is `https://<project-id>.web.app`
-(for this project https://momentum-harshitlarl.web.app, empty until the first deploy).
+`.firebaserc` selects the project, so there is no `firebase use` step. `firebase.json` serves `dist/`
+with the SPA rewrite (any path that is not a real file serves `index.html`) and these headers: `sw.js`,
+`index.html` (also as `/`) and `manifest.webmanifest` are `no-cache`, so a new deploy is noticed on the
+next launch; the hashed files under `assets/` are immutable for a year; icons and fonts are kept for a
+day. Every response also carries `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `X-Frame-Options: DENY` and a `Permissions-Policy` that turns off
+camera, microphone and geolocation (no Content-Security-Policy yet).
 
-### Vercel
+### Other hosts (not deployed)
 
-Import the repo in the dashboard (the Vite preset is detected) or run `npx vercel --prod`. `vercel.json`
-adds the SPA rewrite for paths without a file extension (`assets/` and `icons/` excluded) and the cache
-headers. Nothing else to configure.
+`vercel.json` and `netlify.toml` carry the same rewrite and headers, in case the app ever moves; both
+hosts are free for a personal project. A move is a new origin, so an install from the new URL starts
+empty: sign in, or export a backup first and import it there.
 
-### Netlify
+- **Vercel:** import the repo in the dashboard (the Vite preset is detected) or run `npx vercel --prod`.
+  `vercel.json` adds the SPA rewrite for paths without a file extension (`assets/` and `icons/`
+  excluded) and the headers.
+- **Netlify:** import the repo in the dashboard or run `npx netlify-cli deploy --build --prod`.
+  `netlify.toml` sets the build command, the publish directory, Node 24, the `/*` → `/index.html` 200
+  redirect and the headers.
 
-Import the repo in the dashboard or run `npx netlify-cli deploy --build --prod`. `netlify.toml` sets the
-build command, the publish directory, Node 24, the `/*` → `/index.html` 200 redirect and the cache
-headers. Nothing else to configure.
+### Serving from a sub-path
+
+Vite's `base` comes from `BASE_PATH` (default `/`), and every URL in `index.html`, the manifest and the
+service worker follows it, so the app can also live under a path such as a GitHub Pages project site:
+`BASE_PATH=/momentum/ npm run build`, then `BASE_PATH=/momentum/ npm run preview` (the preview takes its
+base from the same variable; without it, the scripts under `/momentum/` come back as the page itself)
+and open `http://localhost:4173/momentum/`.
 
 ## Project structure
 
@@ -378,8 +369,8 @@ vercel.json / netlify.toml  The same SPA rewrite and cache headers for Vercel an
 scripts/make-icons.mjs      Draws the app icon and rasterises public/icons/* with sharp
 public/icons/               192/512/512-maskable PNGs, 180px apple-touch-icon, favicon.svg
 public/fonts/               The three Latin woff2 files (Fraunces full normal + italic, Hanken Grotesk)
-.github/                    workflows/deploy.yml — test, build with the Pages base path, deploy (actions pinned
-                            to SHAs); dependabot.yml — weekly updates for actions and npm
+.github/                    workflows/deploy.yml — checks on pull requests; on main: test, build, keyless deploy
+                            to Firebase Hosting (actions pinned to SHAs); dependabot.yml — weekly updates
 e2e/                        Playwright specs (momentum, smoke, tasks, screenshots, sync) and helpers (contrast, a11y,
                             Identity Toolkit probe, pending-cleanup ledger; their vitest tests, and the update policy's)
 src/

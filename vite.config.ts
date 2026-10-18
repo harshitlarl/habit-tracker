@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
-// `base` is injected by the deploy workflow (GitHub Pages uses BASE_PATH=/habit-tracker/).
+// `base` comes from BASE_PATH for a host that serves the app from a sub-path; web.app serves it from `/` (SPEC §13.7).
 // Everything asset-related must stay base-aware: never hardcode "/icons/..." inside JS —
 // use `import.meta.env.BASE_URL` instead.
 export default defineConfig({
@@ -61,7 +61,7 @@ export default defineConfig({
         globIgnores: ['**/node_modules/**/*', 'icons/**', '**/firebase-*.js'],
         runtimeCaching: [
           {
-            // Matches under any base (/assets/… and /habit-tracker/assets/…); hashed, so cache-first
+            // Matches under any base (/assets/… and /<base>/assets/…); hashed, so cache-first
             // is safe. Two entries: the current build's chunk and the previous one, while it updates.
             urlPattern: /\/assets\/firebase-[^/]+\.js$/,
             handler: 'CacheFirst',

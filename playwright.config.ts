@@ -5,9 +5,9 @@ import { defineConfig, devices } from '@playwright/test';
  * iPhone 14 running WebKit — the engine the app ships to. The web server does not rebuild, so run
  * `npm run build` first, and `npx playwright install webkit` once per machine.
  *
- * BASE_PATH — the variable vite.config.ts reads — runs the suite in another base, such as the GitHub
- * Pages layout (SPEC §12). Build and test with the same value; the preview server is given it too:
- *   BASE_PATH=/habit-tracker/ npm run build && BASE_PATH=/habit-tracker/ npx playwright test
+ * BASE_PATH — the variable vite.config.ts reads — runs the suite in another base, such as a sub-path
+ * host (SPEC §2, §12). Build and test with the same value; the preview server is given it too:
+ *   BASE_PATH=/momentum/ npm run build && BASE_PATH=/momentum/ npx playwright test
  * Specs navigate to '/', which `vite preview` redirects to the base.
  *
  * On a machine where WebKit cannot launch, PW_FALLBACK_CHROMIUM=1 runs the same phone geometry in

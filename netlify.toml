@@ -56,7 +56,7 @@
   [headers.values]
     Cache-Control = "public, max-age=86400"
 
-# Baseline security headers (no Content-Security-Policy yet). GitHub Pages cannot send headers.
+# Baseline security headers (no Content-Security-Policy yet), the same as firebase.json.
 [[headers]]
   for = "/*"
   [headers.values]

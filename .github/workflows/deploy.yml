@@ -1,31 +1,34 @@
-name: Deploy to GitHub Pages
+name: Test and deploy
 
+# Pull requests (Dependabot's included) get the checks. A push to main runs them again and deploys
+# https://momentum-harshitlarl.web.app, the app's only home (GitHub Pages was retired on 2026-10-18).
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in progress and the
-# latest queued one. Do NOT cancel an in-progress run: a production deployment that has started
-# must be allowed to complete (this matches GitHub's own Pages starter workflow).
+# One deploy at a time, and a deploy that has started is never cancelled: a production deployment
+# must be allowed to complete. A newer push to a pull request cancels that pull request's older checks.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every action is pinned to a full commit SHA (the release named in the comment): a tag can be moved,
-# and this job may publish the site that every installed copy of the app updates itself to.
+# and the deploy job publishes the site that every installed copy of the app updates itself to.
 # Dependabot (.github/dependabot.yml) proposes new SHAs, comment included, as releases appear.
 
 jobs:
-  build:
+  check:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # Node 24 (current LTS) satisfies "engines" in package.json and the Firebase SDK's own >=24.12,
       # so npm ci installs without EBADENGINE warnings.
@@ -35,25 +38,45 @@ jobs:
           cache: npm
 
       - run: npm ci
-
-      # Fail fast on a red unit-test suite so a broken build never ships. The script pins TZ itself.
+      - run: npm run typecheck
+      # The script pins TZ itself.
       - run: npm test
-
-      # The app is served from https://<user>.github.io/<repo>/, so Vite's base must be the repo name.
       - run: npm run build
-        env:
-          BASE_PATH: /${{ github.event.repository.name }}/
-
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
-        with:
-          path: dist
 
   deploy:
-    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the keyless sign-in below
     environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      name: firebase-hosting
+      url: https://momentum-harshitlarl.web.app
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      # A red typecheck or unit-test suite stops here, so a broken build never ships.
+      - run: npm run typecheck
+      - run: npm test
+      # Served from the root of web.app, so Vite's default base '/' applies.
+      - run: npm run build
+
+      # Keyless sign-in (Workload Identity Federation): GitHub's OIDC token is exchanged for a
+      # short-lived Google token of a deploy-only service account (Firebase Hosting Admin plus Service
+      # Usage Consumer; no access to Firestore data or Auth users). Google accepts the exchange only
+      # for this repository's main branch, pinned by repository and owner id. No key is stored anywhere.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/21218059272/locations/global/workloadIdentityPools/github/providers/habit-tracker
+          service_account: github-deploy@momentum-harshitlarl.iam.gserviceaccount.com
+
+      # Hosting only: Firestore rules stay a deliberate, manual `npm run deploy:rules`.
+      - run: npx --yes firebase-tools@15.34.0 deploy --only hosting --project momentum-harshitlarl --non-interactive --message "$GITHUB_SHA"

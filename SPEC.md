@@ -43,6 +43,8 @@ Non-goals: multi-user, cloud sync, push notifications, timers.
 - PWA: still `autoUpdate`, but `src/pwa.ts` reloads into a new build only at a calm moment (no sheet open, no field in use) and asks
   for one on each return to the foreground, at most hourly; the Firebase chunk is runtime-cached (`firebase-sdk`), not precached.
 - Node: `engines` is `^22.12.0 || ^24.0.0 || >=26.0.0` (vitest 5's range) rather than ≥ 20; CI and Netlify build on Node 24.
+- Hosting: GitHub Pages was retired on 2026-10-18 (§13.7); the app is served from the root of https://momentum-harshitlarl.web.app.
+  `BASE_PATH` support stays, for any host that needs a sub-path, and the e2e suite still runs under one (`BASE_PATH=/momentum/`).
 
 ## 3. Views
 
@@ -322,6 +324,7 @@ standalone, not dismissed).
 - Accessibility: every control has a label; tap targets ≥44px; text contrast ≥4.5:1; reduced motion respected.
 - Works offline after first load; data survives reload; iOS "Add to Home Screen" opens standalone with the
   correct icon, title and status-bar treatment; the deployed app works under the `/habit-tracker/` base path.
+  *(As built: since 2026-10-18 the deployed app is at the root of web.app (§13.7); a sub-path base is still supported and tested.)*
 
 ## 13. Phase 2 — Optional cloud sync (Firebase) and multi-host packaging
 
@@ -456,6 +459,16 @@ replays them three-way; another account's sign-in drops it.
 *Deviation (as built, polish):* the three host configs also send `X-Content-Type-Options: nosniff`, `Referrer-Policy:
 strict-origin-when-cross-origin`, `X-Frame-Options: DENY` and a `Permissions-Policy` that turns off camera, microphone and
 geolocation (no CSP yet), and cache `/fonts/**` for a day like the icons. GitHub Pages cannot send headers.
+
+*Deviation (as built, 2026-10-18): one host.* GitHub Pages is switched off and https://momentum-harshitlarl.web.app is the
+only live URL, because each origin keeps its own local copy of the data. `.github/workflows/deploy.yml` ("Test and deploy")
+runs typecheck, unit tests and build on pull requests; on a push to `main` it runs them again and then
+`firebase deploy --only hosting` (firebase-tools pinned), signed in keylessly through Workload Identity Federation: pool `github`,
+provider `habit-tracker` (issuer `token.actions.githubusercontent.com`; condition: repository id 1422388619, owner id 64593254,
+ref `refs/heads/main`), impersonating `github-deploy@momentum-harshitlarl.iam.gserviceaccount.com`, which holds only
+`roles/firebasehosting.admin` and `roles/serviceusage.serviceUsageConsumer`. Rules are not deployed by CI (`npm run deploy:rules`).
+`harshitlarl.github.io` was removed from the Auth authorized domains. `vercel.json` and `netlify.toml` remain as undeployed
+alternatives.
 
 ### 13.8 Tests
 - Unit (vitest, no Firebase SDK needed): `parseRemoteDoc` (good doc, missing fields, wrong types, extra keys);
